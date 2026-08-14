@@ -1,45 +1,43 @@
 # realm-mongoose-orm
 
-> Un ORM TypeScript qui donne à **Realm** l'API et le confort de **Mongoose** :
-> `ormSchema()`, `.model()`, `_id` auto-généré, migrations 100% automatiques,
-> CRUD complet, `findXAndY`, agrégations (`$match`, `$group`, `$sort`, ...).
+> A TypeScript ORM that gives **Realm** the API and comfort of **Mongoose**:
+> `ormSchema()`, `.model()`, auto-generated `_id`, 100% automatic migrations,
+> full CRUD, `findXAndY`, aggregations (`$match`, `$group`, `$sort`, ...).
 
 ---
 
-## Table des matières
+## Table of Contents
 
-1. [Pourquoi cette librairie](#1-pourquoi-cette-librairie)
+1. [Why this library](#1-why-this-library)
 2. [Installation](#2-installation)
-3. [Démarrage rapide](#3-démarrage-rapide)
-4. [Définir un schéma](#4-définir-un-schéma)
-5. [Se connecter à la base](#5-se-connecter-à-la-base)
-6. [Le `_id` automatique](#6-le-_id-automatique)
-7. [Les migrations (100% automatiques)](#7-les-migrations-100-automatiques)
-8. [CRUD complet](#8-crud-complet)
-9. [Filtres façon MongoDB](#9-filtres-façon-mongodb)
-10. [Agrégations](#10-agrégations)
-11. [Relations entre modèles](#11-relations-entre-modèles)
-12. [Événements de connexion](#12-événements-de-connexion)
-13. [Référence API complète](#13-référence-api-complète)
-14. [Bonnes pratiques & limites](#14-bonnes-pratiques--limites)
-15. [Dépannage](#15-dépannage)
+3. [Quick Start](#3-quick-start)
+4. [Define a Schema](#4-define-a-schema)
+5. [Connect to the Database](#5-connect-to-the-database)
+6. [Automatic `_id`](#6-automatic-_id)
+7. [Migrations (100% automatic)](#7-migrations-100-automatic)
+8. [Full CRUD](#8-full-crud)
+9. [MongoDB-style Filters](#9-mongodb-style-filters)
+10. [Aggregations](#10-aggregations)
+11. [Relations between Models](#11-relations-between-models)
+12. [Connection Events](#12-connection-events)
+13. [Complete API Reference](#13-complete-api-reference)
+14. [Best Practices & Limitations](#14-best-practices--limitations)
+15. [Troubleshooting](#15-troubleshooting)
 
 ---
 
-## 1. Pourquoi cette librairie
+## 1. Why this library
 
-Realm est une base de données embarquée très performante, mais son API brute
-oblige à :
-- écrire des schémas au format Realm (`"string?"`, `"double[]"`, ...) au lieu
-  d'un objet lisible façon Mongoose ;
-- gérer manuellement un `schemaVersion` et une fonction de migration à
-  chaque changement de structure ;
-- utiliser un langage de requête textuel (RQL) au lieu de filtres objets ;
-- générer soi-même les identifiants uniques.
+Realm is a very high-performance embedded database, but its raw API forces you to:
 
-**`realm-mongoose-orm` élimine tout ça.** Vous écrivez vos modèles comme avec
-Mongoose, vous appelez `connectDB()`, et la librairie s'occupe du reste :
-identifiants, migrations, traduction des requêtes.
+- write schemas in Realm's own format (`"string?"`, `"double[]"`, ...) instead of a readable Mongoose-like object;
+- manually manage a `schemaVersion` and a migration function on every structural change;
+- use a textual query language (RQL) instead of object-based filters;
+- generate unique identifiers yourself.
+
+**`realm-mongoose-orm` removes all of that.** You write your models as you would with Mongoose, you call `connectDB()`, and the library handles the rest: identifiers, migrations, query translation.
+
+This library is specifically designed for Electron + Vite projects.
 
 ---
 
@@ -50,130 +48,125 @@ npm install
 npm run build
 ```
 
-> ⚠️ **Réseau requis à l'installation.** Le paquet `realm` télécharge un
-> binaire natif précompilé depuis `static.realm.io` lors du `npm install`.
-> Une fois installé, l'application fonctionne entièrement hors-ligne (base
-> de données locale embarquée, pas de serveur à démarrer).
+> ⚠️ **Network required during installation.** The `realm` package downloads a precompiled native binary from `static.realm.io` during `npm install`. Once installed, the application works entirely offline (embedded local database, no server to start).
 
----
-
-## 3. Démarrage rapide
+## 3. Quick Start
 
 ```ts
 import { ormSchema, connectDB } from "realm-mongoose-orm";
 
-// 1. Définir un schéma, comme avec Mongoose
-const userSchema = ormSchema({
-  name:  { type: "string", required: true },
-  email: { type: "string", required: true, unique: true },
-  age:   { type: "number", default: 18 },
-}, { timestamps: true });
+// 1. Define a schema, like with Mongoose
+const userSchema = ormSchema(
+  {
+    name: { type: "string", required: true },
+    email: { type: "string", required: true, unique: true },
+    age: { type: "number", default: 18 },
+  },
+  { timestamps: true },
+);
 
-// 2. Créer le modèle
+// 2. Create the model
 export const userModel = userSchema.model("User");
 
-// 3. Se connecter (une seule fois, au démarrage de l'app)
+// 3. Connect (once, at application startup)
 await connectDB({ path: "app.realm" });
 
-// 4. Utiliser le modèle
+// 4. Use the model
 const user = await userModel.create({ name: "Alice", email: "alice@test.com" });
 console.log(user.toObject());
 ```
 
-C'est tout. Pas de `schemaVersion`, pas de migration écrite à la main, pas de
-génération d'`_id` manuelle.
+That's it. No `schemaVersion`, no manual migration, no manual `_id` generation.
 
 ---
 
-## 4. Définir un schéma
+## 4. Define a Schema
 
 ```ts
-const productSchema = ormSchema({
-  title:       { type: "string", required: true, minLength: 3, maxLength: 120 },
-  price:       { type: "number", required: true, min: 0 },
-  category:    { type: "string", enum: ["food", "tech", "clothing"] as const },
-  inStock:     { type: "boolean", default: true },
-  tags:        { type: "string", array: true },              // tableau de strings
-  publishedAt: { type: "date", default: () => new Date() },  // default dynamique
-  owner:       { ref: "User" },                                // relation 1-1
-  reviews:     { ref: "Review", many: true },                   // relation 1-N
-}, {
-  timestamps: true,   // ajoute createdAt / updatedAt automatiquement
-  primaryKey: "_id",  // par défaut, inutile de le préciser
-});
+const productSchema = ormSchema(
+  {
+    title: { type: "string", required: true, minLength: 3, maxLength: 120 },
+    price: { type: "number", required: true, min: 0 },
+    category: { type: "string", enum: ["food", "tech", "clothing"] as const },
+    inStock: { type: "boolean", default: true },
+    tags: { type: "string", array: true }, // array of strings
+    publishedAt: { type: "date", default: () => new Date() }, // dynamic default
+    owner: { ref: "User" }, // 1-1 relation
+    reviews: { ref: "Review", many: true }, // 1-N relation
+  },
+  {
+    timestamps: true, // adds createdAt / updatedAt automatically
+    primaryKey: "_id", // by default, no need to specify it
+  },
+);
 
 export const productModel = productSchema.model("Product");
 ```
 
-### Types de champs disponibles
+### Available Field Types
 
-| Type Mongoose-like | Type Realm sous-jacent |
-|---------------------|--------------------------|
-| `"string"`          | `string`                 |
-| `"number"`           | `double`                 |
-| `"int"`              | `int`                    |
-| `"boolean"`          | `bool`                   |
-| `"date"`             | `date`                   |
-| `"objectId"`         | `objectId`               |
-| `"uuid"`             | `uuid`                   |
-| `"mixed"`            | `mixed`                  |
-| `"buffer"`           | `data`                   |
+| Mongoose-like Type | Underlying Realm Type |
+| ------------------ | --------------------- |
+| `"string"`         | `string`              |
+| `"number"`         | `double`              |
+| `"int"`            | `int`                 |
+| `"boolean"`        | `bool`                |
+| `"date"`           | `date`                |
+| `"objectId"`       | `objectId`            |
+| `"uuid"`           | `uuid`                |
+| `"mixed"`          | `mixed`               |
+| `"buffer"`         | `data`                |
 
-### Options de validation par champ
+### Field Validation Options
 
-| Option        | Effet                                                         |
-|---------------|-----------------------------------------------------------------|
-| `required`    | Champ obligatoire à la création                                 |
-| `default`     | Valeur (ou fonction) appliquée si le champ est absent            |
-| `unique`      | Marque le champ comme unique (à valider dans votre logique métier)|
-| `enum`        | Liste de valeurs autorisées                                      |
-| `min` / `max` | Bornes numériques                                                |
-| `minLength` / `maxLength` | Bornes de longueur de chaîne                          |
-| `array`       | Le champ est un tableau du type déclaré                          |
-| `validate`    | Fonction custom `(value) => boolean \| string`                   |
+| Option                    | Effect                                                             |
+| ------------------------- | ------------------------------------------------------------------ |
+| `required`                | Field is required at creation                                      |
+| `default`                 | Value (or function) applied if the field is absent                 |
+| `unique`                  | Marks the field as unique (to be validated in your business logic) |
+| `enum`                    | List of allowed values                                             |
+| `min` / `max`             | Numeric bounds                                                     |
+| `minLength` / `maxLength` | String length bounds                                               |
+| `array`                   | The field is an array of the declared type                         |
+| `validate`                | Custom function `(value) => boolean \| string`                     |
 
 ---
 
-## 5. Se connecter à la base
+## 5. Connect to the Database
 
 ```ts
 import { connectDB, disconnectDB, RealmClient } from "realm-mongoose-orm";
 
 await connectDB({
-  path: "app.realm",   // fichier local, ":memory:" pour les tests
-  silent: false,        // false = log de connexion dans la console
+  path: "app.realm", // local file, ":memory:" for testing
+  silent: false, // false = log connection to console
 });
 
-// ... votre application ...
+// ... your application ...
 
 disconnectDB();
 ```
 
-- **Singleton** : `connectDB()` réutilise la connexion existante si vous
-  l'appelez plusieurs fois (comme `mongoose.connect`).
-- **Chargement automatique des modèles** : si vos schémas sont dans un
-  dossier séparé, chargez-les avant de vous connecter :
+- **Singleton**: `connectDB()` reuses the existing connection if called multiple times (like `mongoose.connect`).
+- **Automatic model loading**: if your schemas are in a separate folder, load them before connecting:
 
   ```ts
-  RealmClient.loadModels("./src/models"); // require() tous les .ts/.js du dossier
+  RealmClient.loadModels("./src/models"); // require() all .ts/.js in the folder
   await connectDB({ path: "app.realm" });
   ```
 
 ---
 
-## 6. Le `_id` automatique
+## 6. Automatic `_id`
 
-Vous n'avez **jamais** besoin de fournir ou de générer un `_id` :
+You **never** need to provide or generate an `_id`:
 
 ```ts
 const user = await userModel.create({ name: "Alice", email: "a@test.com" });
-console.log(user.toObject()._id); // UUID généré automatiquement
+console.log(user.toObject()._id); // Automatically generated UUID
 ```
 
-En interne, chaque `create()` / `insertMany()` génère un `Realm.BSON.UUID()`
-si `_id` n'est pas fourni — exactement comme Mongoose génère un `ObjectId`.
-Pour retrouver un document par id (par ex. depuis une route HTTP où l'id
-arrive en `string`), utilisez simplement la string :
+Internally, every `create()` / `insertMany()` generates a `Realm.BSON.UUID()` if `_id` is not provided — exactly like Mongoose generates an `ObjectId`. To find a document by id (e.g., from an HTTP route where the id arrives as a `string`), simply use the string:
 
 ```ts
 await userModel.findById(id);
@@ -181,55 +174,43 @@ await userModel.findByIdAndUpdate(id, { age: 26 });
 await userModel.findByIdAndDelete(id);
 ```
 
-La conversion `string -> UUID` est faite automatiquement par la librairie.
+The `string -> UUID` conversion is handled automatically by the library.
 
 ---
 
-## 7. Les migrations (100% automatiques)
+## 7. Migrations (100% automatic)
 
-**C'est le point le plus important : vous n'écrivez jamais de migration à la main.**
+**This is the most important feature: you never write migrations by hand.**
 
-Realm exige normalement un `schemaVersion` incrémenté manuellement et une
-fonction `onMigration` à chaque changement de structure. Cette librairie
-automatise entièrement ce mécanisme :
+Realm normally requires a manually incremented `schemaVersion` and an `onMigration` function on every structural change. This library fully automates this mechanism:
 
-1. À chaque `connectDB()`, elle compare le schéma actuel (vos `ormSchema`)
-   avec celui de la dernière connexion (sauvegardé dans `<fichier>.meta.json`
-   à côté de votre base).
-2. Si rien n'a changé → rien ne se passe, la version reste la même.
-3. Si un champ a été **ajouté** → la version est incrémentée automatiquement
-   et sa valeur `default` (si définie dans le schéma) est appliquée à tous
-   les documents existants.
-4. Si un champ a été **supprimé** → Realm l'élimine tout seul, aucune action
-   nécessaire.
+1. On every `connectDB()`, it compares the current schema (your `ormSchema`) with the one from the last connection (saved in `<file>.meta.json` next to your database).
+2. If nothing changed → nothing happens, the version stays the same.
+3. If a field was **added** → the version is automatically incremented and its `default` value (if defined in the schema) is applied to all existing documents.
+4. If a field was **removed** → Realm removes it on its own, no action needed.
 
-**Exemple concret :**
+**Concrete example:**
 
 ```ts
-// Version 1 du schéma
+// Version 1 of the schema
 const userSchema = ormSchema({
   name: { type: "string", required: true },
 });
 
-// ... plus tard, vous ajoutez un champ ...
+// ... later, you add a field ...
 
-// Version 2 (juste modifiée dans le code, rien d'autre à faire)
+// Version 2 (just modified in code, nothing else to do)
 const userSchema = ormSchema({
   name: { type: "string", required: true },
-  role: { type: "string", default: "user" }, // <- nouveau champ
+  role: { type: "string", default: "user" }, // <- new field
 });
 ```
 
-Au prochain démarrage de l'application, `connectDB()` détecte le nouveau
-champ `role`, incrémente automatiquement la version, et remplit `"user"`
-pour tous les utilisateurs déjà existants. **Aucune ligne de migration à
-écrire.**
+On the next application startup, `connectDB()` detects the new `role` field, automatically increments the version, and fills `"user"` for all existing users. **No migration code to write.**
 
-### Mode expert (optionnel)
+### Expert Mode (optional)
 
-Pour un cas complexe (renommage de champ, transformation de données), vous
-pouvez toujours fournir votre propre logique, exécutée **en plus** de
-l'auto-migration :
+For a complex case (field renaming, data transformation), you can still provide your own logic, executed **in addition to** the auto-migration:
 
 ```ts
 import { connectDB, defineMigration } from "realm-mongoose-orm";
@@ -247,27 +228,32 @@ await connectDB({
 });
 ```
 
-| Méthode `MigrationBuilder` | Usage |
-|------------------------------|--------|
-| `renameField(model, from, to)` | Copie l'ancienne valeur vers le nouveau nom de champ |
-| `fillDefault(model, field, value)` | Remplit une valeur par défaut si absente |
-| `transform(model, fn)` | Transformation custom, protégée par try/catch par document |
+| `MigrationBuilder` Method          | Usage                                                      |
+| ---------------------------------- | ---------------------------------------------------------- |
+| `renameField(model, from, to)`     | Copies the old value to the new field name                 |
+| `fillDefault(model, field, value)` | Fills a default value if absent                            |
+| `transform(model, fn)`             | Custom transformation, protected by try/catch per document |
 
 ---
 
-## 8. CRUD complet
+## 8. Full CRUD
 
 ```ts
 // Create
 const user = await userModel.create({ name: "Alice", email: "a@test.com" });
-const users = await userModel.insertMany([{ name: "Bob", email: "b@test.com" }]);
+const users = await userModel.insertMany([
+  { name: "Bob", email: "b@test.com" },
+]);
 
-// new + save() (façon document Mongoose)
+// new + save() (Mongoose document style)
 const doc = new userModel({ name: "Carla", email: "c@test.com" });
 await doc.save();
 
 // Read
-await userModel.find({ age: { $gte: 18 } }, { sort: { name: 1 }, limit: 10, skip: 0 });
+await userModel.find(
+  { age: { $gte: 18 } },
+  { sort: { name: 1 }, limit: 10, skip: 0 },
+);
 await userModel.findOne({ email: "a@test.com" });
 await userModel.findById(id);
 await userModel.count();
@@ -278,8 +264,12 @@ await userModel.distinct("role");
 // Update
 await userModel.updateOne({ email: "a@test.com" }, { age: 26 });
 await userModel.updateMany({ role: "user" }, { isActive: true });
-await userModel.findByIdAndUpdate(id, { age: 27 });          // renvoie le doc mis à jour
-await userModel.findOneAndUpdate({ email: "a@test.com" }, { age: 28 }, { new: false }); // renvoie l'ancien doc
+await userModel.findByIdAndUpdate(id, { age: 27 }); // returns updated doc
+await userModel.findOneAndUpdate(
+  { email: "a@test.com" },
+  { age: 28 },
+  { new: false },
+); // returns old doc
 
 // Delete
 await userModel.deleteOne({ email: "a@test.com" });
@@ -290,41 +280,41 @@ await userModel.findOneAndDelete({ email: "a@test.com" });
 // Instance
 await doc.save();
 await doc.remove();
-doc.toObject(); // objet JS brut
-doc.toJSON();   // alias, pratique pour res.json(doc)
+doc.toObject(); // raw JS object
+doc.toJSON(); // alias, handy for res.json(doc)
 ```
 
 ---
 
-## 9. Filtres façon MongoDB
+## 9. MongoDB-style Filters
 
 ```ts
 await userModel.find({
   age: { $gte: 18, $lte: 65 },
   role: { $in: ["admin", "user"] },
   email: { $exists: true },
-  name: { $contains: "ali" }, // recherche insensible à la casse
+  name: { $contains: "ali" }, // case-insensitive search
 });
 ```
 
-Opérateurs supportés : `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`,
-`$nin`, `$exists`, `$contains`.
+Supported operators: `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`, `$nin`, `$exists`, `$contains`.
 
 ---
 
-## 10. Agrégations
+## 10. Aggregations
 
-Pipeline en mémoire façon `Model.aggregate([...])` de Mongoose :
+In-memory pipeline like Mongoose's `Model.aggregate([...])`:
 
 ```ts
 const stats = await userModel.aggregate([
   { $match: { isActive: true } },
-  { $group: {
+  {
+    $group: {
       _id: "$role",
       total: { $count: "$_id" },
       avgAge: { $avg: "$age" },
       maxAge: { $max: "$age" },
-    }
+    },
   },
   { $sort: { total: -1 } },
   { $limit: 5 },
@@ -332,85 +322,77 @@ const stats = await userModel.aggregate([
 // [{ _id: "user", total: 12, avgAge: 27.4, maxAge: 41 }, ...]
 ```
 
-Stages supportés : `$match`, `$group` (`$sum`, `$avg`, `$min`, `$max`,
-`$count`, `$push`, `$addToSet`, `$first`, `$last`), `$sort`, `$skip`,
-`$limit`, `$project`, `$unwind`.
+Supported stages: `$match`, `$group` (`$sum`, `$avg`, `$min`, `$max`, `$count`, `$push`, `$addToSet`, `$first`, `$last`), `$sort`, `$skip`, `$limit`, `$project`, `$unwind`.
 
 ---
 
-## 11. Relations entre modèles
+## 11. Relations between Models
 
 ```ts
 const reviewSchema = ormSchema({
   text: { type: "string", required: true },
-  author: { ref: "User" },              // relation simple
+  author: { ref: "User" }, // simple relation
 });
 
 const productSchema = ormSchema({
   title: { type: "string", required: true },
-  reviews: { ref: "Review", many: true }, // liste de relations
+  reviews: { ref: "Review", many: true }, // list of relations
 });
 ```
 
-> Les modèles référencés doivent être enregistrés (via `.model(...)`) **avant**
-> `connectDB()`, peu importe l'ordre des imports, tant que le fichier est chargé.
+> Referenced models must be registered (via `.model(...)`) **before** `connectDB()`, regardless of import order, as long as the file is loaded.
 
-En interne, un champ `{ ref: "..." }` est stocké comme un simple **id** (uuid),
-exactement comme un `ObjectId` avec `ref` dans Mongoose — pas comme un lien
-Realm natif. Vous pouvez créer un document en passant soit l'id, soit le
-document complet, la relation est normalisée automatiquement :
+Internally, a `{ ref: "..." }` field is stored as a simple **id** (uuid), exactly like an `ObjectId` with `ref` in Mongoose — not as a native Realm link. You can create a document by passing either the id or the full document; the relation is automatically normalized:
 
 ```ts
 const post = await postModel.create({
-  title: "Mon article",
+  title: "My article",
   content: "...",
-  author: alice,       // ou directement : author: alice.toObject()._id
+  author: alice, // or directly: author: alice.toObject()._id
 });
 ```
 
-### `populate()`, exactement comme Mongoose
+### `populate()`, exactly like Mongoose
 
-**Option 1 — directement dans la requête**, comme `Model.findById(id).populate("author")` :
+**Option 1 — directly in the query**, like `Model.findById(id).populate("author")`:
 
 ```ts
 const post = await postModel.findById(id, { populate: ["author"] });
-console.log(post?.toObject().author); // { _id, name, email, ... } au lieu d'un simple id
+console.log(post?.toObject().author); // { _id, name, email, ... } instead of a plain id
 
 const posts = await postModel.find({}, { populate: ["author"] });
 ```
 
-**Option 2 — manuellement, sur un document déjà chargé**, comme `doc.populate("field")` :
+**Option 2 — manually, on an already loaded document**, like `doc.populate("field")`:
 
 ```ts
-const post = await postModel.findOne({ title: "Mon article" });
-await post?.populate("author");           // un seul champ
-await post?.populate(["author", "tags"]); // plusieurs champs
+const post = await postModel.findOne({ title: "My article" });
+await post?.populate("author"); // single field
+await post?.populate(["author", "tags"]); // multiple fields
 ```
 
-**Option 3 — sur un lot de documents en une seule fois** (une seule requête
-`$in` par champ, quel que soit le nombre de documents — pas de N+1) :
+**Option 3 — on a batch of documents at once** (a single `$in` query per field, regardless of document count — no N+1):
 
 ```ts
 const posts = await postModel.find({});
 await postModel.populate(posts, ["author"]);
 ```
 
-Pour une relation `many: true`, `populate()` remplace le tableau d'ids par
-le tableau des documents résolus.
+For a `many: true` relation, `populate()` replaces the array of ids with the array of resolved documents.
 
 ---
 
-## 12. Événements de connexion
+## 12. Connection Events
 
-`RealmClient` est un `EventEmitter` :
+`RealmClient` is an `EventEmitter`:
 
 ```ts
 import { RealmClient } from "realm-mongoose-orm";
 
-RealmClient.on("connecting", () => console.log("Connexion en cours..."));
-RealmClient.on("connected", () => console.log("Connecté !"));
-RealmClient.on("disconnected", () => console.log("Déconnecté."));
-RealmClient.on("error", (err) => console.error("Erreur Realm:", err));
+RealmClient.on("connecting", () => console.log("Connecting..."));
+RealmClient.on("connected", () => console.log("Connected!"));
+RealmClient.on("disconnected", () => console.log("Disconnected."));
+RealmClient.on("error", (err) => console.error("Realm error:", err));
 
 RealmClient.getState(); // "disconnected" | "connecting" | "connected" | "error"
 RealmClient.isConnected(); // boolean
@@ -418,79 +400,108 @@ RealmClient.isConnected(); // boolean
 
 ---
 
-## 13. Référence API complète
+## 13. Complete API Reference
 
 ### `ormSchema(fields, options?) => Schema`
-Crée une définition de schéma. `options.timestamps` ajoute `createdAt`/`updatedAt`.
+
+Creates a schema definition. `options.timestamps` adds `createdAt`/`updatedAt`.
 
 ### `schema.model(name) => ModelClass`
-Enregistre le schéma et renvoie la classe modèle utilisable pour le CRUD.
+
+Registers the schema and returns the model class usable for CRUD.
 
 ### `connectDB(options?) => Promise<Realm>`
-Connexion simplifiée. `options.path`, `options.silent`, mode expert :
-`options.schemaVersion`, `options.onMigration`.
+
+Simplified connection. `options.path`, `options.silent`, expert mode: `options.schemaVersion`, `options.onMigration`.
 
 ### `disconnectDB() => void`
-Ferme la connexion.
+
+Closes the connection.
 
 ### `RealmClient`
-Singleton exposant `.connect()`, `.close()`, `.getRealm()`, `.isConnected()`,
-`.getState()`, `.loadModels(dir)`, et les événements `connecting` / `connected`
-/ `disconnected` / `error`.
 
-### Méthodes statiques d'un modèle
-`create`, `insertMany`, `find`, `findOne`, `findById`, `updateOne`,
-`updateMany`, `deleteOne`, `deleteMany`, `count`, `countDocuments`, `exists`,
-`distinct`, `findByIdAndUpdate`, `findByIdAndDelete`, `findOneAndUpdate`,
-`findOneAndDelete`, `aggregate`, `populate(docOrDocs, fields)`.
+Singleton exposing `.connect()`, `.close()`, `.getRealm()`, `.isConnected()`, `.getState()`, `.loadModels(dir)`, and the `connecting` / `connected` / `disconnected` / `error` events.
 
-### Méthodes d'instance
+### Static Model Methods
+
+`create`, `insertMany`, `find`, `findOne`, `findById`, `updateOne`, `updateMany`, `deleteOne`, `deleteMany`, `count`, `countDocuments`, `exists`, `distinct`, `findByIdAndUpdate`, `findByIdAndDelete`, `findOneAndUpdate`, `findOneAndDelete`, `aggregate`, `populate(docOrDocs, fields)`.
+
+### Instance Methods
+
 `save()`, `remove()`, `populate(fields)`, `toObject()`, `toJSON()`.
 
 ---
 
-## 14. Bonnes pratiques & limites
+## 14. Best Practices & Limitations
 
-- **Toujours importer vos fichiers de modèles avant `connectDB()`** — c'est
-  l'import qui enregistre le schéma dans le registre global.
-- **Le fichier `<db>.meta.json`** créé à côté de votre `.realm` sert à
-  détecter les changements de schéma : ne le supprimez pas manuellement en
-  production (sinon la prochaine migration ne saura plus ce qui a changé).
-- **`unique`** est une intention documentée mais n'est pas (encore) imposée
-  nativement par Realm au niveau moteur ; ajoutez une vérification
-  applicative si c'est critique (ex: `exists({ email })` avant `create`).
-- **`aggregate()`** fonctionne en mémoire (charge les documents puis applique
-  le pipeline) — parfait pour des collections de taille raisonnable, pas
-  conçu pour des agrégations massives façon data warehouse.
+- **Always import your model files before `connectDB()`** — it's the import that registers the schema in the global registry.
+- **The `<db>.meta.json` file** created next to your `.realm` is used to detect schema changes: do not delete it manually in production (otherwise the next migration won't know what changed).
+- **`unique`** is a documented intention but is not (yet) natively enforced by Realm at the engine level; add an application-level check if it's critical (e.g., `exists({ email })` before `create`).
+- **`aggregate()`** works in-memory (loads documents then applies the pipeline) — perfect for collections of reasonable size, not designed for massive data-warehouse-style aggregations.
 
 ---
 
-## 15. Dépannage
+## 15. Troubleshooting
 
-**`Realm n'est pas connecté`**
-→ Appelez `connectDB()` avant tout appel à un modèle.
+**`Realm is not connected`**
+→ Call `connectDB()` before any model call.
 
-**`Aucun schéma enregistré`**
-→ Vos fichiers de modèles n'ont pas été importés avant `connectDB()`. Importez-les explicitement ou utilisez `RealmClient.loadModels("./models")`.
+**`No schema registered`**
+→ Your model files were not imported before `connectDB()`. Import them explicitly or use `RealmClient.loadModels("./models")`.
 
-**Erreur réseau pendant `npm install`**
-→ Le paquet `realm` télécharge un binaire natif depuis `static.realm.io`.
-Vérifiez votre connexion internet / proxy d'entreprise.
+**Network error during `npm install`**
+→ The `realm` package downloads a native binary from `static.realm.io`. Check your internet connection / corporate proxy.
 
 ---
 
-## Structure du projet
+## Vite-specific Configuration for Electron Projects
+
+In your `vite.config.js` file:
+
+```ts
+electron({
+  main: {
+    entry: "[your entry]/main.ts",
+
+    vite: {
+      build: {
+        outDir: "[your output]/main",
+        emptyOutDir: true,
+
+        rolldownOptions: {
+          external: ["realm"],
+        },
+      },
+
+      optimizeDeps: {
+        exclude: ["realm"],
+      },
+
+      // ... rest of your config
+    },
+  },
+  // ... rest of your electron config
+});
+```
+
+---
+
+## Project Structure
 
 ```
 src/
-  types.ts               // types des champs, filtres façon Mongo
-  Schema.ts                // ormSchema(), validation, conversion vers Realm
-  QueryTranslator.ts       // { age: { $gt: 18 } } -> requête Realm (RQL)
-  Aggregate.ts              // pipeline d'agrégation façon MongoDB
-  Model.ts                  // CRUD complet + findXAndY
-  MigrationBuilder.ts        // helpers de migration "sans risque"
-  SchemaVersionManager.ts    // détection + migration automatique du schéma
-  RealmClient.ts              // connectDB(), événements, singleton
-  registry.ts                  // registre global des schémas déclarés
-  example/                     // exemple d'utilisation complet
+  types.ts               // Field types, Mongo-style filters
+  Schema.ts              // ormSchema(), validation, conversion to Realm
+  QueryTranslator.ts     // { age: { $gt: 18 } } -> Realm query (RQL)
+  Aggregate.ts           // MongoDB-style aggregation pipeline
+  Model.ts               // Full CRUD + findXAndY
+  MigrationBuilder.ts    // "Safe" migration helpers
+  SchemaVersionManager.ts // Schema detection + automatic migration
+  RealmClient.ts         // connectDB(), events, singleton
+  registry.ts            // Global registry of declared schemas
+  example/               // Complete usage example
+```
+
+```
+
 ```
