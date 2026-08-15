@@ -3,6 +3,7 @@ import { isRelation, Schema } from "./Schema";
 import { QueryTranslator } from "./QueryTranslator";
 import { RealmClient } from "./RealmClient";
 import { Aggregate, AggregationStage } from "./Aggregate";
+import { Query } from "./Query";
 import { getRegisteredSchema } from "./registry";
 import type { FindOptions, MongoLikeFilter, RelationDefinition } from "./types";
 
@@ -25,9 +26,34 @@ function extractId(value: unknown): Realm.BSON.UUID | undefined {
 function toPlainObject<T>(realmObject: Realm.Object & Record<string, unknown>): T {
   const plain: Record<string, unknown> = {};
   for (const key of Object.keys(realmObject)) {
-    plain[key] = (realmObject as Record<string, unknown>)[key];
+    const value = (realmObject as Record<string, unknown>)[key];
+    // Les listes Realm (relations "many", champs array) sont itérables mais pas
+    // de vrais tableaux JS : on les convertit pour un usage normal (map, JSON, ...).
+    plain[key] =
+      value && typeof value === "object" && typeof (value as any)[Symbol.iterator] === "function" && !(value instanceof Date)
+        ? Array.from(value as Iterable<unknown>)
+        : value;
   }
   return plain as T;
+}
+
+/**
+ * Convertit récursivement tout `Realm.BSON.UUID` (ids, ids de relation) en string,
+ * exactement comme Mongoose sérialise un `ObjectId` en string dans `toJSON()`.
+ * Sans ça, `_id` apparaîtrait comme un buffer brut illisible côté client (IPC, JSON.stringify...).
+ */
+function serializeValue(value: unknown): unknown {
+  if (value instanceof Realm.BSON.UUID) return value.toString();
+  if (Array.isArray(value)) return value.map(serializeValue);
+  if (value instanceof Date) return value;
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = serializeValue(v);
+    }
+    return out;
+  }
+  return value;
 }
 
 /**
@@ -35,7 +61,7 @@ function toPlainObject<T>(realmObject: Realm.Object & Record<string, unknown>): 
  * pour que le développeur puisse indifféremment passer un id string ("64f...")
  * ou un document déjà peuplé ({ _id: "64f...", name: "Alice" }).
  */
-function normalizeRelations<T extends Record<string, unknown>>(
+function normalizeRelations<T extends object>(
   schema: Schema<T>,
   payload: Record<string, unknown>
 ): void {
@@ -59,7 +85,7 @@ function normalizeRelations<T extends Record<string, unknown>>(
  * Classe de base renvoyée par schema.model("Nom").
  * Chaque instance représente un document, comme un document Mongoose.
  */
-export class BaseModel<T extends Record<string, unknown>> {
+export class BaseModel<T extends object> {
   private _isNew: boolean;
   [key: string]: unknown;
 
@@ -99,7 +125,7 @@ export class BaseModel<T extends Record<string, unknown>> {
 
   toObject(): T {
     const { _isNew, ...rest } = this as unknown as Record<string, unknown>;
-    return rest as T;
+    return serializeValue(rest) as T;
   }
 
   toJSON(): T {
@@ -107,15 +133,15 @@ export class BaseModel<T extends Record<string, unknown>> {
   }
 }
 
-export interface ModelClass<T extends Record<string, unknown>> {
+export interface ModelClass<T extends object> {
   new (data: Partial<T>, isNew?: boolean): BaseModel<T>;
   modelName: string;
 
   create(data: Partial<T>): Promise<BaseModel<T>>;
   insertMany(data: Partial<T>[]): Promise<BaseModel<T>[]>;
-  find(filter?: MongoLikeFilter<T>, options?: FindOptions): Promise<BaseModel<T>[]>;
-  findOne(filter?: MongoLikeFilter<T>, options?: FindOptions): Promise<BaseModel<T> | null>;
-  findById(id: string, options?: FindOptions): Promise<BaseModel<T> | null>;
+  find(filter?: MongoLikeFilter<T>, options?: FindOptions): Query<BaseModel<T>[]>;
+  findOne(filter?: MongoLikeFilter<T>, options?: FindOptions): Query<BaseModel<T> | null>;
+  findById(id: string, options?: FindOptions): Query<BaseModel<T> | null>;
   updateOne(filter: MongoLikeFilter<T>, update: Partial<T>): Promise<number>;
   updateMany(filter: MongoLikeFilter<T>, update: Partial<T>): Promise<number>;
   deleteOne(filter: MongoLikeFilter<T>): Promise<number>;
@@ -141,7 +167,7 @@ export interface ModelClass<T extends Record<string, unknown>> {
   populate(docs: BaseModel<T>[], fields: string[]): Promise<BaseModel<T>[]>;
 }
 
-export function createModel<T extends Record<string, unknown>>(name: string, schema: Schema<T>): ModelClass<T> {
+export function createModel<T extends object>(name: string, schema: Schema<T>): ModelClass<T> {
   class Model extends BaseModel<T> {
     static modelName = name;
 
@@ -149,7 +175,7 @@ export function createModel<T extends Record<string, unknown>>(name: string, sch
       const withDefaults = schema.applyDefaults(data);
       schema.validate(withDefaults);
 
-      const realm = RealmClient.getRealm();
+      const realm = await RealmClient.ready();
       const payload: Record<string, unknown> = { ...withDefaults };
       normalizeRelations(schema, payload);
       if (!payload._id) {
@@ -165,7 +191,7 @@ export function createModel<T extends Record<string, unknown>>(name: string, sch
     }
 
     static async insertMany(dataList: Partial<T>[]): Promise<BaseModel<T>[]> {
-      const realm = RealmClient.getRealm();
+      const realm = await RealmClient.ready();
       const results: BaseModel<T>[] = [];
 
       realm.write(() => {
@@ -183,37 +209,50 @@ export function createModel<T extends Record<string, unknown>>(name: string, sch
       return results;
     }
 
-    static async find(filter: MongoLikeFilter<T> = {}, options: FindOptions = {}): Promise<BaseModel<T>[]> {
-      const realm = RealmClient.getRealm();
-      const { query, args } = QueryTranslator.translate(filter);
-      let results = realm.objects(name).filtered(query, ...args);
+    static _findExec(filter: MongoLikeFilter<T>, options: FindOptions): Promise<any> {
+      return (async () => {
+        const realm = await RealmClient.ready();
+        const { query, args } = QueryTranslator.translate(filter);
+        let results = realm.objects(name).filtered(query, ...args);
 
-      if (options.sort) {
-        const sortSpec = QueryTranslator.translateSort(options.sort)!;
-        for (const [field, reverse] of sortSpec) {
-          results = results.sorted(field, reverse);
+        if (options.sort) {
+          const sortSpec = QueryTranslator.translateSort(options.sort)!;
+          for (const [field, reverse] of sortSpec) {
+            results = results.sorted(field, reverse);
+          }
         }
-      }
 
-      let array = Array.from(results);
-      if (options.skip) array = array.slice(options.skip);
-      if (options.limit) array = array.slice(0, options.limit);
+        let array = Array.from(results);
+        if (options.skip) array = array.slice(options.skip);
+        if (options.limit) array = array.slice(0, options.limit);
 
-      const docs = array.map((obj) => new Model(toPlainObject<T>(obj as any), false));
+        const docs = array.map((obj) => new Model(toPlainObject<T>(obj as any), false));
 
-      if (options.populate?.length) {
-        await Model.populate(docs, options.populate);
-      }
+        if (options.populate?.length) {
+          await Model.populate(docs, options.populate);
+        }
 
-      return docs;
+        return options.lean ? docs.map((d) => d.toObject()) : docs;
+      })();
     }
 
-    static async findOne(filter: MongoLikeFilter<T> = {}, options: FindOptions = {}): Promise<BaseModel<T> | null> {
-      const results = await Model.find(filter, { ...options, limit: 1 });
-      return results[0] ?? null;
+    /**
+     * Renvoie une requête chaînable, façon Mongoose :
+     *   await userModel.find({ role: "admin" }).populate("team").sort({ name: 1 }).limit(10);
+     * Fonctionne aussi directement avec await (sans rien chaîner), comme avant.
+     */
+    static find(filter: MongoLikeFilter<T> = {}, options: FindOptions = {}): Query<BaseModel<T>[]> {
+      return new Query<BaseModel<T>[]>((opts) => Model._findExec(filter, opts), options);
     }
 
-    static async findById(id: string, options: FindOptions = {}): Promise<BaseModel<T> | null> {
+    static findOne(filter: MongoLikeFilter<T> = {}, options: FindOptions = {}): Query<BaseModel<T> | null> {
+      return new Query<BaseModel<T> | null>(async (opts) => {
+        const results = (await Model._findExec(filter, { ...opts, limit: 1 })) as BaseModel<T>[];
+        return results[0] ?? null;
+      }, options);
+    }
+
+    static findById(id: string, options: FindOptions = {}): Query<BaseModel<T> | null> {
       return Model.findOne({ _id: toUuid(id) } as unknown as MongoLikeFilter<T>, options);
     }
 
@@ -222,7 +261,7 @@ export function createModel<T extends Record<string, unknown>>(name: string, sch
     }
 
     static async updateMany(filter: MongoLikeFilter<T>, update: Partial<T>, onlyFirst = false): Promise<number> {
-      const realm = RealmClient.getRealm();
+      const realm = await RealmClient.ready();
       const { query, args } = QueryTranslator.translate(filter);
       const results = realm.objects(name).filtered(query, ...args);
 
@@ -252,7 +291,7 @@ export function createModel<T extends Record<string, unknown>>(name: string, sch
     }
 
     static async deleteMany(filter: MongoLikeFilter<T>, onlyFirst = false): Promise<number> {
-      const realm = RealmClient.getRealm();
+      const realm = await RealmClient.ready();
       const { query, args } = QueryTranslator.translate(filter);
       const results = realm.objects(name).filtered(query, ...args);
 
@@ -269,7 +308,7 @@ export function createModel<T extends Record<string, unknown>>(name: string, sch
     }
 
     static async count(filter: MongoLikeFilter<T> = {}): Promise<number> {
-      const realm = RealmClient.getRealm();
+      const realm = await RealmClient.ready();
       const { query, args } = QueryTranslator.translate(filter);
       return realm.objects(name).filtered(query, ...args).length;
     }

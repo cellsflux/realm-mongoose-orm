@@ -13,17 +13,30 @@ interface SchemaMetaFile {
   models: Record<string, Record<string, StoredFieldMeta>>;
 }
 
+export interface MigrationPlan {
+  version: number;
+  migration?: MigrationFn;
+  /**
+   * N'écrit le fichier .meta.json sur disque QUE si appelé.
+   * Ne doit être appelé qu'APRÈS que Realm.open() a réellement réussi,
+   * sinon le méta-fichier se désynchronise du fichier .realm réel et
+   * plus aucune migration n'est proposée au prochain démarrage
+   * (boucle d'erreur "Migration is required" permanente).
+   */
+  commit: () => void;
+}
+
 /**
- * Calcule automatiquement schemaVersion et le migration function à la place du développeur.
- * Fonctionnement (comme un "auto-migrate" façon Prisma) :
- *  1. À chaque connexion, on compare les schémas actuellement déclarés (ormSchema)
- *     avec ceux enregistrés lors de la connexion précédente (fichier <db>.meta.json).
- *  2. S'il y a une différence (champ ajouté/retiré/type changé), la version est
- *     incrémentée automatiquement et une migration "safe" est générée :
- *     - nouveaux champs -> valeur par défaut du schéma (ou valeur neutre du type)
- *     - champs supprimés -> ignorés (Realm les élimine tout seul)
- *  3. Le développeur n'écrit RIEN, sauf s'il veut un comportement custom
- *     (auquel cas il peut toujours passer onMigration lui-même à connectDB()).
+ * Calcule automatiquement schemaVersion et la fonction de migration.
+ *  1. Compare le schéma actuel (ormSchema) à celui de la dernière connexion
+ *     RÉUSSIE (fichier <db>.meta.json).
+ *  2. Champ ajouté -> valeur par défaut du schéma appliquée aux documents existants.
+ *  3. Champ supprimé seul -> ignoré, Realm l'élimine tout seul.
+ *  4. Un champ supprimé + un champ ajouté du même type dans le même modèle,
+ *     lors de la même connexion -> traité comme un RENOMMAGE : la valeur est
+ *     copiée automatiquement vers le nouveau nom (aucune perte de données),
+ *     exactement comme si vous aviez écrit `m.renameField(model, from, to)`.
+ *  5. Le fichier .meta.json n'est mis à jour qu'après un Realm.open() réussi.
  */
 export class SchemaVersionManager {
   private metaPath: string;
@@ -35,6 +48,7 @@ export class SchemaVersionManager {
   private buildCurrentMeta(): SchemaMetaFile["models"] {
     const models: SchemaMetaFile["models"] = {};
     for (const [name, entry] of getAllEntries()) {
+      if (!entry.realmObjectSchema) continue;
       const fields: Record<string, StoredFieldMeta> = {};
       for (const [propName, propType] of Object.entries(entry.realmObjectSchema.properties)) {
         const typeStr = typeof propType === "string" ? propType : (propType as { type: string }).type;
@@ -59,7 +73,11 @@ export class SchemaVersionManager {
 
   private writeMeta(meta: SchemaMetaFile): void {
     if (!this.metaPath) return;
-    fs.writeFileSync(this.metaPath, JSON.stringify(meta, null, 2), "utf-8");
+    const tmpPath = `${this.metaPath}.tmp`;
+    // Écriture atomique (fichier temporaire + rename) pour ne jamais laisser
+    // un .meta.json à moitié écrit si le process est interrompu.
+    fs.writeFileSync(tmpPath, JSON.stringify(meta, null, 2), "utf-8");
+    fs.renameSync(tmpPath, this.metaPath);
   }
 
   private hasChanges(previous: SchemaMetaFile["models"], current: SchemaMetaFile["models"]): boolean {
@@ -69,41 +87,67 @@ export class SchemaVersionManager {
   }
 
   /**
-   * Renvoie la version à utiliser + une fonction de migration auto-générée.
-   * Si `explicitVersion`/`explicitMigration` sont fournis par le développeur,
-   * ils sont utilisés tels quels (mode "expert", non obligatoire).
+   * Prépare la version + migration à utiliser, SANS rien écrire sur disque.
+   * Appelez `.commit()` sur le résultat uniquement après un Realm.open() réussi.
    */
-  resolve(explicitVersion?: number, explicitMigration?: MigrationFn): { version: number; migration?: MigrationFn } {
+  plan(explicitVersion?: number, explicitMigration?: MigrationFn): MigrationPlan {
     const current = this.buildCurrentMeta();
 
     if (explicitVersion !== undefined) {
-      this.writeMeta({ version: explicitVersion, models: current });
-      return { version: explicitVersion, migration: explicitMigration };
+      return {
+        version: explicitVersion,
+        migration: explicitMigration,
+        commit: () => this.writeMeta({ version: explicitVersion, models: current }),
+      };
     }
 
     const previous = this.readPreviousMeta();
 
     if (!previous) {
       // Première connexion : version 0, rien à migrer.
-      this.writeMeta({ version: 0, models: current });
-      return { version: 0, migration: explicitMigration };
+      return {
+        version: 0,
+        migration: explicitMigration,
+        commit: () => this.writeMeta({ version: 0, models: current }),
+      };
     }
 
     const changed = this.hasChanges(previous.models, current);
     const newVersion = changed ? previous.version + 1 : previous.version;
 
     if (!changed) {
-      return { version: newVersion, migration: explicitMigration };
+      return { version: newVersion, migration: explicitMigration, commit: () => {} };
     }
 
     const autoMigration: MigrationFn = (oldRealm, newRealm) => {
       const builder = new MigrationBuilder(oldRealm, newRealm);
+
       for (const [modelName, fields] of Object.entries(current)) {
         const previousFields = previous.models[modelName] ?? {};
-        for (const [fieldName, meta] of Object.entries(fields)) {
-          const isNewField = !(fieldName in previousFields);
-          if (!isNewField) continue;
 
+        const addedFieldNames = Object.keys(fields).filter((f) => !(f in previousFields));
+        const removedFieldNames = Object.keys(previousFields).filter((f) => !(f in fields));
+
+        // Détection de renommage : exactement 1 champ retiré + 1 champ ajouté
+        // de même type -> on considère que c'est un renommage et on préserve la donnée.
+        let renamedFrom: string | null = null;
+        let renamedTo: string | null = null;
+        if (removedFieldNames.length === 1 && addedFieldNames.length === 1) {
+          const from = removedFieldNames[0];
+          const to = addedFieldNames[0];
+          if (previousFields[from].type === fields[to].type) {
+            renamedFrom = from;
+            renamedTo = to;
+          }
+        }
+
+        if (renamedFrom && renamedTo) {
+          builder.renameField(modelName, renamedFrom, renamedTo);
+          continue;
+        }
+
+        // Sinon : traitement standard, champ par champ ajouté.
+        for (const fieldName of addedFieldNames) {
           const entry = getAllEntries().get(modelName);
           const fieldDef = entry ? (entry.schema as Schema<any>).fields[fieldName] : undefined;
           const defaultValue =
@@ -115,11 +159,15 @@ export class SchemaVersionManager {
           // Sinon Realm applique automatiquement la valeur neutre du type (0, "", false, null).
         }
       }
+
       // Laisse aussi la place à une logique custom du développeur si fournie.
       explicitMigration?.(oldRealm, newRealm);
     };
 
-    this.writeMeta({ version: newVersion, models: current });
-    return { version: newVersion, migration: autoMigration };
+    return {
+      version: newVersion,
+      migration: autoMigration,
+      commit: () => this.writeMeta({ version: newVersion, models: current }),
+    };
   }
 }

@@ -77,4 +77,6 @@ export interface FindOptions {
   skip?: number;
   /** Champs de relation à résoudre automatiquement, façon Mongoose populate() */
   populate?: string[];
+  /** Renvoie des objets JS bruts au lieu d'instances de modèle (comme .lean() en Mongoose) */
+  lean?: boolean;
 }

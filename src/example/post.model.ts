@@ -1,17 +1,9 @@
-import { ormSchema } from "../Schema";
+import { ormSchema, InferModel } from "../Schema";
 
-export interface IPost {
-  [key: string]: unknown;
-  _id?: string;
-  title: string;
-  content: string;
-  author?: unknown; // id (string) avant populate, objet User complet après populate
-  createdAt?: Date;
-  updatedAt?: Date;
-}
-
-// Relation simple : un post appartient à un auteur (User)
-const postSchema = ormSchema<IPost>(
+// Relation simple : un post appartient à un auteur (User).
+// "author" est déduit automatiquement comme un id (string), et devient un
+// objet User complet une fois populate("author") appelé.
+const postSchema = ormSchema(
   {
     title: { type: "string", required: true },
     content: { type: "string", required: true },
@@ -22,3 +14,4 @@ const postSchema = ormSchema<IPost>(
 
 export const postModel = postSchema.model("Post");
 export { postSchema };
+export type IPost = InferModel<typeof postModel>;

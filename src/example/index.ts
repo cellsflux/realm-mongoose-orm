@@ -22,7 +22,8 @@ async function main() {
   console.log("Utilisateurs majeurs:", adults.map((u) => u.toObject()));
 
   // findById / findByIdAndUpdate / findByIdAndDelete, comme Mongoose
-  const id = (alice.toObject()._id as any).toString();
+  // _id est automatiquement sérialisé en string dans toObject() (comme un ObjectId Mongoose)
+  const id = alice.toObject()._id as string;
   const updated = await userModel.findByIdAndUpdate(id, { age: 25 });
   console.log("Après findByIdAndUpdate:", updated?.toObject());
 
@@ -54,10 +55,14 @@ async function main() {
   console.log("Post créé (author = id, pas encore peuplé):", post.toObject());
 
   // populate() directement dans find/findOne/findById :
-  const populatedPost = await postModel.findById((post.toObject()._id as any).toString(), {
+  const populatedPost = await postModel.findById(post.toObject()._id as string, {
     populate: ["author"],
   });
   console.log("Post peuplé:", populatedPost?.toObject());
+
+  // ---- Requête CHAÎNÉE, exactement comme Mongoose : find(...).populate(...).sort(...).limit(...) ----
+  const chained = await postModel.find({ title: "Premier article" }).populate("author").sort({ title: 1 }).limit(5);
+  console.log("Requête chaînée avec populate:", chained.map((p) => p.toObject()));
 
   // ou manuellement, après coup, sur un document déjà chargé :
   const anotherPost = await postModel.findOne({ title: "Premier article" });

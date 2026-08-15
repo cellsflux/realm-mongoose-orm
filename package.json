@@ -1,6 +1,6 @@
 {
   "name": "realm-mongoose-orm",
-  "version": "1.0.1",
+  "version": "1.0.0",
   "description": "Mini ORM TypeScript pour Realm avec une API facon Mongoose : schemas, modeles, CRUD, migrations 100% automatiques, agregations.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -17,15 +17,15 @@
     "migration",
     "nodejs"
   ],
-  "author": "Cellsflux",
+  "author": "",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/cellsflux/realm-mongoose-orm.git"
+    "url": "git+https://github.com/VOTRE-USER/realm-mongoose-orm.git"
   },
-  "homepage": "https://github.com/cellsflux/realm-mongoose-orm#readme",
+  "homepage": "https://github.com/VOTRE-USER/realm-mongoose-orm#readme",
   "bugs": {
-    "url": "https://github.com/cellsflux/realm-mongoose-orm/issues"
+    "url": "https://github.com/VOTRE-USER/realm-mongoose-orm/issues"
   },
   "engines": {
     "node": ">=16"

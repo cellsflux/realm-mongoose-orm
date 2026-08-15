@@ -81,21 +81,26 @@ class RealmClientImpl extends EventEmitter {
 
     // --- Gestion 100% automatique de la version + migration ---
     const versionManager = new SchemaVersionManager(dbPath);
-    const { version, migration } = versionManager.resolve(options.schemaVersion, options.onMigration);
+    const plan = versionManager.plan(options.schemaVersion, options.onMigration);
 
     const config: Realm.Configuration = {
       path: dbPath,
       schema,
-      schemaVersion: version,
+      schemaVersion: plan.version,
       encryptionKey: options.encryptionKey,
-      onMigration: migration,
+      onMigration: plan.migration,
     };
 
     try {
       this.realm = await Realm.open(config);
+      // Le méta-fichier n'est écrit qu'ICI, une fois la migration réellement
+      // appliquée avec succès. Si Realm.open() avait échoué, rien n'est écrit :
+      // la prochaine tentative recalculera exactement le même plan de migration
+      // au lieu de rester bloquée dans un état désynchronisé.
+      plan.commit();
       this.state = "connected";
       if (!options.silent) {
-        console.log(`✅ [realm-mongoose-orm] connecté à "${dbPath}" (schemaVersion=${version})`);
+        console.log(`✅ [realm-mongoose-orm] connecté à "${dbPath}" (schemaVersion=${plan.version})`);
       }
       this.emit("connected", this.realm);
       return this.realm;
@@ -126,6 +131,20 @@ class RealmClientImpl extends EventEmitter {
       );
     }
     return this.realm;
+  }
+
+  /**
+   * Comme `getRealm()`, mais attend une connexion déjà EN COURS au lieu
+   * d'échouer immédiatement (façon "buffering" de Mongoose). Utile quand une
+   * requête IPC arrive juste après le démarrage de l'app, pendant que
+   * `connectDB()` est encore en train de s'exécuter : au lieu de crasher,
+   * l'opération patiente puis s'exécute normalement dès que possible.
+   * Si la connexion échoue (ex: erreur de migration), l'erreur remonte ici.
+   */
+  async ready(): Promise<Realm> {
+    if (this.realm && !this.realm.isClosed) return this.realm;
+    if (this.connectingPromise) return this.connectingPromise;
+    return this.getRealm(); // jamais connecté et rien en cours -> erreur claire
   }
 
   close(): void {

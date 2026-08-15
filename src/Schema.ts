@@ -9,6 +9,7 @@ import {
 } from "./types";
 import { createModel, ModelClass } from "./Model";
 import { registerSchema, registerModelClass } from "./registry";
+import type { InferSchemaType } from "./infer";
 
 export class ValidationError extends Error {
   constructor(field: string, message: string) {
@@ -40,7 +41,7 @@ function normalize(def: FieldDefinition): FieldOptions | RelationDefinition {
   return def;
 }
 
-export class Schema<T extends Record<string, unknown> = Record<string, unknown>> {
+export class Schema<T extends object = Record<string, unknown>> {
   public readonly fields: SchemaDefinitionMap;
   public readonly options: Required<Pick<SchemaOptions, "timestamps" | "primaryKey" | "version">>;
 
@@ -167,9 +168,19 @@ export class Schema<T extends Record<string, unknown> = Record<string, unknown>>
 }
 
 /** Alias principal demandé : ormSchema({...}, { timestamps: true }) */
-export function ormSchema<T extends Record<string, unknown> = Record<string, unknown>>(
-  fields: SchemaDefinitionMap,
+/**
+ * Équivalent de `mongoose.Schema(...)`. Le type TypeScript du document est
+ * déduit automatiquement à partir des champs déclarés (comme
+ * `InferSchemaType` chez Mongoose) : `.create({ ... })`, `.find({ ... })`
+ * etc. bénéficient de l'autocomplétion sans écrire d'interface à la main.
+ * Vous pouvez toujours forcer un type explicite avec `ormSchema<MonType>(...)`.
+ */
+export function ormSchema<Fields extends SchemaDefinitionMap, T extends object = InferSchemaType<Fields>>(
+  fields: Fields,
   options?: SchemaOptions
 ): Schema<T> {
   return new Schema<T>(fields, options);
 }
+
+/** Extrait le type de document d'un modèle : `type User = InferModel<typeof userModel>` */
+export type InferModel<M> = M extends ModelClass<infer T> ? T : never;
