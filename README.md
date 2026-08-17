@@ -1,8 +1,17 @@
 # realm-mongoose-orm
 
 > Un ORM TypeScript qui donne à **Realm** l'API et le confort de **Mongoose** :
-> `ormSchema()`, `.model()`, `_id` auto-généré, migrations 100% automatiques,
-> CRUD complet, `findXAndY`, agrégations (`$match`, `$group`, `$sort`, ...).
+> `ormSchema()`, `.model()`, `_id` auto-généré, migrations 100% automatiques
+> (peu importe la complexité), CRUD complet retournant des objets JS natifs,
+> `findXAndY`, `populate()` avec projection, agrégations (`$match`, `$group`,
+> `$sort`, ...).
+
+> ⚠️ **v2 — changement important** : toutes les méthodes (`create`, `find`,
+> `findOne`, `findById`, `findByIdAndUpdate`, ...) renvoient désormais des
+> **objets JS simples directement**, plus des instances qu'il fallait
+> convertir avec `.toObject()`. Si vous mettez à jour depuis une version
+> antérieure, retirez les appels à `.toObject()`/`.map(d => d.toObject())` —
+> vos données sont déjà au bon format. Voir §6 et §8bis.
 
 ---
 
@@ -161,24 +170,37 @@ disconnectDB();
 
 ---
 
-## 6. Le `_id` automatique
+## 6. Le `_id` automatique + objets JS natifs par défaut
 
 Vous n'avez **jamais** besoin de fournir ou de générer un `_id` :
 
 ```ts
 const user = await userModel.create({ name: "Alice", email: "a@test.com" });
-console.log(user.toObject()._id); // "a2658a17-3c6a-44d1-8891-fe9d8c828..." (string, pas un buffer)
+console.log(user._id); // "a2658a17-3c6a-44d1-8891-fe9d8c828..." (string, pas un buffer)
+console.log(user.name); // "Alice" -- objet JS simple, directement utilisable
 ```
 
 En interne, chaque `create()` / `insertMany()` génère un `Realm.BSON.UUID()`
 si `_id` n'est pas fourni — exactement comme Mongoose génère un `ObjectId`.
 
-**`toObject()` / `toJSON()` sérialisent automatiquement tous les ids en
-string** (récursivement, y compris dans les documents peuplés par
-`populate()`). Vous n'obtiendrez donc jamais un buffer brut `{ sub_type: 4,
-buffer: {...} }` en sortie — que ce soit en JSON, dans une réponse IPC
-Electron, ou dans un `console.log`. C'est le même comportement que
-`JSON.stringify(mongooseDoc)`, qui convertit un `ObjectId` en string.
+**Toutes les méthodes renvoient un objet JS simple par défaut** — `create`,
+`find`, `findOne`, `findById`, `findByIdAndUpdate`, `insertMany`, etc. Aucune
+conversion à faire, aucune classe à connaître. C'est important en particulier
+avec **Electron** : l'IPC (`ipcMain.handle`) sérialise la réponse avec
+l'algorithme *structured clone*, qui **ignore** les méthodes `toJSON()`
+custom des classes. Renvoyer une instance de modèle brute via IPC exposait
+donc des champs internes et des ids en buffer — ce n'est plus possible
+puisque vous manipulez déjà un objet JS ordinaire :
+
+```ts
+ipcMain.handle("user:getProfile", async () => {
+  return userModel.findOne({ _id: currentUserId }); // déjà un objet JS propre, ids en string
+});
+```
+
+Tous les ids (y compris ceux des documents peuplés par `populate()`) sont
+sérialisés en string récursivement — vous n'obtiendrez jamais un buffer brut
+`{ sub_type: 4, buffer: {...} }` en sortie.
 
 Pour retrouver un document par id (par ex. depuis une route HTTP ou un canal
 IPC où l'id arrive en `string`), utilisez simplement la string :
@@ -191,9 +213,12 @@ await userModel.findByIdAndDelete(id);
 
 La conversion `string -> UUID` est faite automatiquement par la librairie.
 
+> Besoin d'une vraie instance (pour enchaîner `.save()`/`.populate()` après
+> coup) ? Passez `{ lean: false }` — voir §8bis.
+
 ---
 
-## 7. Les migrations (100% automatiques)
+## 7. Les migrations (100% automatiques, quelle que soit la complexité)
 
 **C'est le point le plus important : vous n'écrivez jamais de migration à la main.**
 
@@ -255,13 +280,15 @@ const productSchema = ormSchema({ By: { type: "number" } });
 Au redémarrage, la librairie voit que `by` a disparu et que `By` (même
 type) est apparu → elle copie automatiquement la valeur de `by` vers `By`
 pour tous les documents existants, sans que vous ayez à écrire quoi que ce
-soit.
+soit. **Plusieurs renommages simultanés dans le même modèle sont détectés
+correctement** (chaque champ retiré est apparié au premier champ ajouté
+disponible de même type).
 
-> ⚠️ La détection de renommage ne fonctionne que pour **un seul** champ
-> retiré + **un seul** champ ajouté par modèle et par connexion, de même
-> type. Pour un cas plus complexe (plusieurs renommages en même temps, ou
-> changement de type), utilisez le mode expert ci-dessous avec
-> `m.renameField(...)`.
+> ⚠️ Cas limite : si vous ajoutez ET renommez un champ du **même type** en
+> même temps dans le même modèle, l'appariement se fait dans l'ordre de
+> déclaration et peut parfois se tromper de correspondance. Dans ce cas rare,
+> précisez la logique exacte avec `m.renameField(...)` en mode expert
+> ci-dessous — sinon, l'automatique suffit dans l'immense majorité des cas.
 
 ### Mode expert (optionnel)
 
@@ -341,7 +368,8 @@ doc.toJSON();   // alias, pratique pour res.json(doc) ou une réponse IPC Electr
 Promise : ils renvoient un objet `Query` **chaînable et "thenable"**. Vous
 pouvez soit l'`await` directement, soit enchaîner des méthodes avant de
 l'`await` — dans les deux cas, la requête ne part réellement que lorsqu'elle
-est `await`ée :
+est `await`ée. **Le résultat est un objet JS simple par défaut**, prêt à
+être renvoyé tel quel (IPC, `res.json()`, ...) :
 
 ```ts
 // Exactement la syntaxe Mongoose que vous cherchiez :
@@ -352,28 +380,41 @@ const posts = await postModel
   .skip(0)
   .limit(20);
 
-// populate() accepte aussi plusieurs champs, séparés ou en tableau :
-await postModel.find({}).populate("author", "tags");
-await postModel.find({}).populate(["author", "tags"]);
+console.log(posts[0].author.name); // déjà peuplé, déjà un objet JS simple
 
-// .lean() renvoie des objets JS bruts (pas d'instances de modèle), pour aller plus vite
-const rawPosts = await postModel.find({}).lean();
+// populate() avec projection (select), exactement comme Mongoose :
+await postModel.find({}).populate("author", "name email"); // path + select (chaîne espacée)
+await postModel.find({}).populate("author", ["name", "email"]); // path + select (tableau)
+await postModel.find({}).populate({ path: "author", select: "name email" });
+await postModel.find({}).populate([{ path: "author", select: "name" }, { path: "tags" }]);
+
+// Plusieurs chemins d'un coup, sans select (comme Mongoose "path1 path2") :
+await postModel.find({}).populate("author tags");
 
 // Sans rien chaîner, ça continue de marcher comme avant :
 const all = await userModel.find({ isActive: true });
+
+// Besoin d'une vraie instance de modèle (pour enchaîner .save()/.populate()
+// après coup) plutôt qu'un objet JS simple :
+const doc = await userModel.findOne({ email: "a@test.com" }).lean(false);
+await doc?.save();
 ```
 
 | Méthode `Query` | Équivalent Mongoose |
 |-------------------|------------------------|
-| `.populate(...fields)` | `.populate(field)` |
+| `.populate(path)` / `.populate(path, select)` / `.populate([{path,select}])` | `.populate(...)` |
 | `.sort(spec)`            | `.sort(spec)` |
 | `.limit(n)`               | `.limit(n)` |
 | `.skip(n)`                 | `.skip(n)` |
-| `.lean()`                   | `.lean()` |
+| `.lean()` / `.lean(false)`  | `.lean()` |
 
 ---
 
-## 9. Filtres façon MongoDB
+## 9. Filtres façon MongoDB — avec autocomplétion
+
+Grâce au type déduit automatiquement de votre `ormSchema` (§4), l'objet de
+filtre bénéficie de l'autocomplétion sur les vrais noms de champs de votre
+modèle (votre éditeur vous propose `name`, `email`, `age`, `role`, ...) :
 
 ```ts
 await userModel.find({
@@ -441,27 +482,39 @@ document complet, la relation est normalisée automatiquement :
 const post = await postModel.create({
   title: "Mon article",
   content: "...",
-  author: alice,       // ou directement : author: alice.toObject()._id
+  author: alice,       // ou directement : author: alice._id
 });
 ```
 
-### `populate()`, exactement comme Mongoose
+### `populate()`, exactement comme Mongoose (avec projection `select`)
 
 **Option 1 — directement dans la requête**, comme `Model.findById(id).populate("author")` :
 
 ```ts
-const post = await postModel.findById(id, { populate: ["author"] });
-console.log(post?.toObject().author); // { _id, name, email, ... } au lieu d'un simple id
+const post = await postModel.findById(id, { populate: [{ path: "author" }] });
+console.log(post?.author); // { _id, name, email, ... } au lieu d'un simple id -- déjà un objet JS
 
-const posts = await postModel.find({}, { populate: ["author"] });
+// Avec projection : ne récupère que certains champs du document peuplé
+const lightPost = await postModel.findById(id, {
+  populate: [{ path: "author", select: ["name", "email"] }],
+});
+console.log(lightPost?.author); // { _id, name, email } -- password, etc. exclus
+
+const posts = await postModel.find({}, { populate: [{ path: "author" }] });
 ```
 
-**Option 2 — manuellement, sur un document déjà chargé**, comme `doc.populate("field")` :
+**Option 2 — manuellement, sur un document déjà chargé** (fonctionne aussi bien
+sur un objet JS simple que sur une instance) :
 
 ```ts
-const post = await postModel.findOne({ title: "Mon article" });
-await post?.populate("author");           // un seul champ
-await post?.populate(["author", "tags"]); // plusieurs champs
+const post = await postModel.findOne({ title: "Mon article" }, { lean: false }); // instance -> .populate() dispo
+await post?.populate("author");                       // un seul champ
+await post?.populate("author", "name email");          // avec projection
+await post?.populate([{ path: "author", select: "name" }]);
+
+// Ou directement sur un objet JS simple, via la méthode statique :
+const plainPost = await postModel.findOne({ title: "Mon article" });
+const [populated] = await postModel.populate([plainPost], "author");
 ```
 
 **Option 3 — sur un lot de documents en une seule fois** (une seule requête
@@ -469,11 +522,12 @@ await post?.populate(["author", "tags"]); // plusieurs champs
 
 ```ts
 const posts = await postModel.find({});
-await postModel.populate(posts, ["author"]);
+const populated = await postModel.populate(posts, "author");
 ```
 
 Pour une relation `many: true`, `populate()` remplace le tableau d'ids par
-le tableau des documents résolus.
+le tableau des documents résolus (avec la même projection `select`
+appliquée à chaque élément).
 
 ---
 
@@ -527,18 +581,19 @@ librairie), `.isConnected()`, `.getState()`, `.loadModels(dir)`, et les
 événements `connecting` / `connected` / `disconnected` / `error`.
 
 ### `Query` (renvoyé par `find` / `findOne` / `findById`)
-Objet chaînable et "thenable" : `.populate(...fields)`, `.sort(spec)`,
-`.limit(n)`, `.skip(n)`, `.lean()`. S'`await`e directement comme une Promise.
+Objet chaînable et "thenable" : `.populate(path, select?)`, `.sort(spec)`,
+`.limit(n)`, `.skip(n)`, `.lean(true|false)`. S'`await`e directement comme
+une Promise. **Renvoie des objets JS simples par défaut** (`lean !== false`).
 
 ### Méthodes statiques d'un modèle
 `create`, `insertMany`, `find`, `findOne`, `findById`, `updateOne`,
 `updateMany`, `deleteOne`, `deleteMany`, `count`, `countDocuments`, `exists`,
 `distinct`, `findByIdAndUpdate`, `findByIdAndDelete`, `findOneAndUpdate`,
 `findOneAndDelete`, `aggregate`, `populate(docOrDocs, fields)`.
+**Toutes renvoient des objets JS simples**, ids déjà en string.
 
-### Méthodes d'instance
-`save()`, `remove()`, `populate(fields)`, `toObject()` (ids déjà en string),
-`toJSON()`.
+### Méthodes d'instance (uniquement via `new Model(...)` ou `{ lean: false }`)
+`save()`, `remove()`, `populate(path, select?)`, `toObject()`, `toJSON()`.
 
 ---
 

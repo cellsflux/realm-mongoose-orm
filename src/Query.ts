@@ -1,4 +1,5 @@
-import type { FindOptions, MongoLikeFilter } from "./types";
+import type { FindOptions, MongoLikeFilter, PopulateInput } from "./types";
+import { normalizePopulateArgs } from "./populateUtils";
 
 export type QueryExecutor<R> = (options: FindOptions) => Promise<R>;
 
@@ -21,10 +22,16 @@ export class Query<R> implements PromiseLike<R> {
     this.options = { ...initialOptions };
   }
 
-  /** Résout un ou plusieurs champs de relation, comme .populate("author") ou .populate(["a", "b"]) */
-  populate(...fields: (string | string[])[]): this {
-    const flat = fields.flatMap((f) => (Array.isArray(f) ? f : [f]));
-    this.options.populate = [...(this.options.populate ?? []), ...flat];
+  /**
+   * Résout un ou plusieurs champs de relation, exactement comme Mongoose :
+   *   .populate("author")
+   *   .populate("author tags")                     // plusieurs chemins
+   *   .populate("author", "name email")             // avec projection (select)
+   *   .populate([{ path: "author", select: "name" }])
+   */
+  populate(...args: (PopulateInput | PopulateInput[])[]): this {
+    const specs = normalizePopulateArgs(args);
+    this.options.populate = [...(this.options.populate ?? []), ...specs];
     return this;
   }
 
@@ -43,9 +50,13 @@ export class Query<R> implements PromiseLike<R> {
     return this;
   }
 
-  /** Renvoie des objets JS bruts (pas d'instances de modèle), comme .lean() en Mongoose */
-  lean(): this {
-    this.options.lean = true;
+  /**
+   * Bascule explicitement entre objets JS bruts (par défaut) et vraies
+   * instances de modèle. `lean()` ou `lean(true)` = objets bruts (déjà le
+   * comportement par défaut). `lean(false)` = instances avec .save()/.populate().
+   */
+  lean(value = true): this {
+    this.options.lean = value;
     return this;
   }
 

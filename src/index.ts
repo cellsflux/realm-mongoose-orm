@@ -16,5 +16,7 @@ export type {
   MongoLikeFilter,
   MongoOperator,
   FindOptions,
+  PopulateSpec,
+  PopulateInput,
 } from "./types";
 export type { BaseModel, ModelClass } from "./Model";

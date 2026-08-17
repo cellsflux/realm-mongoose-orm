@@ -4,28 +4,39 @@ import { postModel } from "./post.model";
 
 async function main() {
   // Connexion simplifiée : pas de schemaVersion, pas de migration à écrire.
-  // La librairie détecte toute seule si le schéma a changé depuis la dernière fois.
   await connectDB({ path: "demo.realm" });
 
-  // create() -- _id généré automatiquement (uuid), comme un ObjectId Mongoose
-  const alice = await userModel.create({ name: "Alice", email: "alice@example.com", age: 24 });
-  console.log("Créé:", alice.toObject());
+  // create() renvoie directement un objet JS simple (plus besoin de .toObject())
+  // -- sûr à envoyer tel quel via IPC Electron, res.json(), JSON.stringify(), etc.
+  const alice = await userModel.create({
+    name: "Alice",
+    email: "alice@example.com",
+    age: 24,
+  });
+  console.log("Créé:", alice); // { _id: "a2658a17-...", name: "Alice", ... } -- _id déjà en string
 
-  // new Model() + save()
+  // new Model() + save() reste utile pour un flux orienté "document"
   const bob = new userModel({ name: "Bob", email: "bob@example.com" });
   await bob.save();
 
-  const carla = await userModel.create({ name: "Carla", email: "carla@example.com", age: 31, role: "admin" });
+  const carla = await userModel.create({
+    name: "Carla",
+    email: "carla@example.com",
+    age: 31,
+    role: "admin",
+  });
 
-  // find() avec filtre façon Mongo
-  const adults = await userModel.find({ age: { $gte: 18 } }, { sort: { name: 1 } });
-  console.log("Utilisateurs majeurs:", adults.map((u) => u.toObject()));
+  // find() avec filtre façon Mongo -- l'autocomplétion propose "name", "email", "age", "role", "isActive"
+  const adults = await userModel.find(
+    { age: { $gte: 18 } },
+    { sort: { name: 1 } },
+  );
+  console.log("Utilisateurs majeurs:", adults); // déjà des objets JS, pas besoin de .map(u => u.toObject())
 
   // findById / findByIdAndUpdate / findByIdAndDelete, comme Mongoose
-  // _id est automatiquement sérialisé en string dans toObject() (comme un ObjectId Mongoose)
-  const id = alice.toObject()._id as string;
+  const id = alice._id as string;
   const updated = await userModel.findByIdAndUpdate(id, { age: 25 });
-  console.log("Après findByIdAndUpdate:", updated?.toObject());
+  console.log("Après findByIdAndUpdate:", updated);
 
   // findOneAndUpdate / findOneAndDelete
   await userModel.findOneAndUpdate({ email: "bob@example.com" }, { age: 30 });
@@ -36,7 +47,13 @@ async function main() {
 
   // aggregate() façon MongoDB
   const byRole = await userModel.aggregate([
-    { $group: { _id: "$role", total: { $count: "$_id" }, avgAge: { $avg: "$age" } } },
+    {
+      $group: {
+        _id: "$role",
+        total: { $count: "$_id" },
+        avgAge: { $avg: "$age" },
+      },
+    },
     { $sort: { total: -1 } },
   ]);
   console.log("Agrégation par rôle:", byRole);
@@ -45,29 +62,40 @@ async function main() {
 
   // ---- Relations + populate(), façon Mongoose ----
 
-  // On peut passer directement le document (author: alice), l'id (author: id),
-  // ou une string : la relation est normalisée automatiquement.
   const post = await postModel.create({
     title: "Premier article",
     content: "Contenu de test",
-    author: alice, // équivalent de `author: alice._id`
+    author: alice, // ou directement : author: alice._id -- normalisé automatiquement
   });
-  console.log("Post créé (author = id, pas encore peuplé):", post.toObject());
+  console.log("Post créé (author = id, pas encore peuplé):", post);
 
-  // populate() directement dans find/findOne/findById :
-  const populatedPost = await postModel.findById(post.toObject()._id as string, {
-    populate: ["author"],
+  // populate() directement dans find/findOne/findById, avec projection (select) façon Mongoose :
+  const populatedPost = await postModel.findById(post._id as string, {
+    populate: [{ path: "author", select: ["name", "email"] }],
   });
-  console.log("Post peuplé:", populatedPost?.toObject());
+  console.log("Post peuplé (author limité à name/email):", populatedPost);
 
-  // ---- Requête CHAÎNÉE, exactement comme Mongoose : find(...).populate(...).sort(...).limit(...) ----
-  const chained = await postModel.find({ title: "Premier article" }).populate("author").sort({ title: 1 }).limit(5);
-  console.log("Requête chaînée avec populate:", chained.map((p) => p.toObject()));
+  // ---- Requête CHAÎNÉE, exactement comme Mongoose ----
+  // populate("author", "name email") : chemin + projection en une chaîne façon Mongoose
+  const chained = await postModel
+    .find({ title: "Premier article" })
+    .populate("author", "name email")
+    .sort({ title: 1 })
+    .limit(5);
+  console.log("Requête chaînée avec populate + select:", chained);
 
-  // ou manuellement, après coup, sur un document déjà chargé :
-  const anotherPost = await postModel.findOne({ title: "Premier article" });
-  await anotherPost?.populate("author");
-  console.log("Peuplé manuellement:", anotherPost?.toObject());
+  // populate() manuel, sur un document déjà récupéré (objet JS simple, pas une instance)
+  const anotherPost = await postModel.findOne(
+    { title: "Premier article" },
+    { lean: true },
+  );
+  if (anotherPost) {
+    const [populatedManually] = await postModel.populate(
+      [anotherPost],
+      "author",
+    );
+    console.log("Peuplé manuellement:", populatedManually);
+  }
 
   await userModel.findByIdAndDelete(id);
   disconnectDB();

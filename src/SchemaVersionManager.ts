@@ -26,17 +26,30 @@ export interface MigrationPlan {
   commit: () => void;
 }
 
+/** Comparaison stable et profonde (contrairement à JSON.stringify(obj, arrayReplacer)
+ *  qui filtre récursivement les clés et masque silencieusement les vrais changements). */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  const keys = Object.keys(value as Record<string, unknown>).sort();
+  const parts = keys.map((k) => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k])}`);
+  return `{${parts.join(",")}}`;
+}
+
 /**
- * Calcule automatiquement schemaVersion et la fonction de migration.
+ * Calcule automatiquement schemaVersion et la fonction de migration —
+ * quelle que soit la complexité du changement, sans intervention du développeur :
  *  1. Compare le schéma actuel (ormSchema) à celui de la dernière connexion
- *     RÉUSSIE (fichier <db>.meta.json).
- *  2. Champ ajouté -> valeur par défaut du schéma appliquée aux documents existants.
- *  3. Champ supprimé seul -> ignoré, Realm l'élimine tout seul.
- *  4. Un champ supprimé + un champ ajouté du même type dans le même modèle,
- *     lors de la même connexion -> traité comme un RENOMMAGE : la valeur est
- *     copiée automatiquement vers le nouveau nom (aucune perte de données),
- *     exactement comme si vous aviez écrit `m.renameField(model, from, to)`.
- *  5. Le fichier .meta.json n'est mis à jour qu'après un Realm.open() réussi.
+ *     RÉUSSIE (fichier <db>.meta.json), via une comparaison profonde fiable.
+ *  2. Champ ajouté -> valeur par défaut du schéma appliquée aux documents existants
+ *     (ou valeur neutre du type si aucun default n'est déclaré). Aucune perte de données.
+ *  3. Champ supprimé -> Realm l'élimine, avec ses données, silencieusement.
+ *  4. Champs supprimés + champs ajoutés du même type, dans le même modèle, lors de
+ *     la même connexion -> appariés automatiquement comme des RENOMMAGES (gère
+ *     plusieurs renommages simultanés) : la valeur est copiée vers le nouveau nom,
+ *     aucune perte de données, sans écrire la moindre ligne de migration.
+ *  5. Le fichier .meta.json n'est mis à jour qu'après un Realm.open() réussi
+ *     (jamais de désynchronisation entre la base réelle et ce qui est "connu").
  */
 export class SchemaVersionManager {
   private metaPath: string;
@@ -81,9 +94,7 @@ export class SchemaVersionManager {
   }
 
   private hasChanges(previous: SchemaMetaFile["models"], current: SchemaMetaFile["models"]): boolean {
-    const prevJson = JSON.stringify(previous, Object.keys(previous).sort());
-    const currJson = JSON.stringify(current, Object.keys(current).sort());
-    return prevJson !== currJson;
+    return stableStringify(previous) !== stableStringify(current);
   }
 
   /**
@@ -128,26 +139,29 @@ export class SchemaVersionManager {
         const addedFieldNames = Object.keys(fields).filter((f) => !(f in previousFields));
         const removedFieldNames = Object.keys(previousFields).filter((f) => !(f in fields));
 
-        // Détection de renommage : exactement 1 champ retiré + 1 champ ajouté
-        // de même type -> on considère que c'est un renommage et on préserve la donnée.
-        let renamedFrom: string | null = null;
-        let renamedTo: string | null = null;
-        if (removedFieldNames.length === 1 && addedFieldNames.length === 1) {
-          const from = removedFieldNames[0];
-          const to = addedFieldNames[0];
-          if (previousFields[from].type === fields[to].type) {
-            renamedFrom = from;
-            renamedTo = to;
+        // Appariement des renommages : chaque champ supprimé est associé au
+        // premier champ ajouté de MÊME TYPE encore disponible. Gère plusieurs
+        // renommages simultanés dans le même modèle, pas seulement un seul.
+        const stillAdded = new Set(addedFieldNames);
+        const renamedPairs: Array<[string, string]> = [];
+
+        for (const removedName of removedFieldNames) {
+          const removedType = previousFields[removedName]?.type;
+          const match = Array.from(stillAdded).find((addedName) => fields[addedName]?.type === removedType);
+          if (match) {
+            renamedPairs.push([removedName, match]);
+            stillAdded.delete(match);
           }
         }
 
-        if (renamedFrom && renamedTo) {
-          builder.renameField(modelName, renamedFrom, renamedTo);
-          continue;
+        for (const [from, to] of renamedPairs) {
+          builder.renameField(modelName, from, to);
         }
 
-        // Sinon : traitement standard, champ par champ ajouté.
-        for (const fieldName of addedFieldNames) {
+        // Les champs ajoutés qui n'ont pas été appariés à un renommage sont
+        // de VRAIS nouveaux champs -> valeur par défaut du schéma (ou valeur
+        // neutre du type, gérée nativement par Realm si aucun default n'existe).
+        for (const fieldName of stillAdded) {
           const entry = getAllEntries().get(modelName);
           const fieldDef = entry ? (entry.schema as Schema<any>).fields[fieldName] : undefined;
           const defaultValue =
@@ -156,8 +170,10 @@ export class SchemaVersionManager {
           if (defaultValue !== undefined) {
             builder.fillDefault(modelName, fieldName, defaultValue);
           }
-          // Sinon Realm applique automatiquement la valeur neutre du type (0, "", false, null).
         }
+
+        // Les champs supprimés non appariés sont de VRAIES suppressions :
+        // Realm élimine la propriété (et sa donnée) tout seul, rien à faire ici.
       }
 
       // Laisse aussi la place à une logique custom du développeur si fournie.

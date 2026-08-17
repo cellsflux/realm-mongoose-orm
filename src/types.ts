@@ -71,12 +71,27 @@ export interface MongoOperator<T> {
   $contains?: string;
 }
 
+/** Spécification normalisée de population (interne) */
+export interface PopulateSpec {
+  path: string;
+  select?: string[];
+}
+
+/** Ce que le développeur peut passer à .populate(...), façon Mongoose */
+export type PopulateInput = string | { path: string; select?: string | string[] };
+
 export interface FindOptions {
   sort?: Record<string, 1 | -1>;
   limit?: number;
   skip?: number;
   /** Champs de relation à résoudre automatiquement, façon Mongoose populate() */
-  populate?: string[];
-  /** Renvoie des objets JS bruts au lieu d'instances de modèle (comme .lean() en Mongoose) */
+  populate?: PopulateSpec[];
+  /**
+   * Renvoie des objets JS bruts (par défaut : true) au lieu d'instances de
+   * modèle. Mettez `lean: false` pour récupérer de vraies instances avec
+   * `.save()` / `.populate()` / `.remove()`. Par défaut, tout est déjà un
+   * objet JS simple — sûr à envoyer tel quel via IPC Electron, JSON.stringify,
+   * res.json(), etc. (les ids sont déjà des strings).
+   */
   lean?: boolean;
 }

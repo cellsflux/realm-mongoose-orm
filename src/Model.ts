@@ -4,8 +4,9 @@ import { QueryTranslator } from "./QueryTranslator";
 import { RealmClient } from "./RealmClient";
 import { Aggregate, AggregationStage } from "./Aggregate";
 import { Query } from "./Query";
+import { normalizePopulateArgs } from "./populateUtils";
 import { getRegisteredSchema } from "./registry";
-import type { FindOptions, MongoLikeFilter, RelationDefinition } from "./types";
+import type { FindOptions, MongoLikeFilter, PopulateInput, PopulateSpec, RelationDefinition } from "./types";
 
 /** Convertit un id passé en string (ex: depuis une URL) vers le type uuid attendu par Realm */
 function toUuid(id: string | Realm.BSON.UUID): Realm.BSON.UUID {
@@ -56,15 +57,22 @@ function serializeValue(value: unknown): unknown {
   return value;
 }
 
+/** Ne garde que les champs demandés (+ _id), pour populate({ select: "..." }) */
+function applySelect<T extends Record<string, unknown>>(doc: T, select?: string[]): T {
+  if (!select || select.length === 0) return doc;
+  const out: Record<string, unknown> = { _id: doc._id };
+  for (const key of select) {
+    if (key in doc) out[key] = doc[key];
+  }
+  return out as T;
+}
+
 /**
  * Convertit les champs de relation (`{ ref: "User" }`) d'un payload en id(s) uuid,
  * pour que le développeur puisse indifféremment passer un id string ("64f...")
  * ou un document déjà peuplé ({ _id: "64f...", name: "Alice" }).
  */
-function normalizeRelations<T extends object>(
-  schema: Schema<T>,
-  payload: Record<string, unknown>
-): void {
+function normalizeRelations<T extends object>(schema: Schema<T>, payload: Record<string, unknown>): void {
   for (const [field, rawDef] of Object.entries(schema.fields)) {
     if (!isRelation(rawDef)) continue;
     const def = rawDef as RelationDefinition;
@@ -83,7 +91,9 @@ function normalizeRelations<T extends object>(
 
 /**
  * Classe de base renvoyée par schema.model("Nom").
- * Chaque instance représente un document, comme un document Mongoose.
+ * Une instance n'est créée QUE si vous utilisez `new Model(...)` ou
+ * `{ lean: false }` explicitement — par défaut, toutes les méthodes du
+ * modèle renvoient de simples objets JS (voir §"Le _id automatique" du README).
  */
 export class BaseModel<T extends object> {
   private _isNew: boolean;
@@ -101,7 +111,7 @@ export class BaseModel<T extends object> {
 
     if (this._isNew) {
       const created = await Model.create(data);
-      Object.assign(this, created.toObject());
+      Object.assign(this, created);
       this._isNew = false;
       return this;
     }
@@ -116,10 +126,15 @@ export class BaseModel<T extends object> {
     await Model.deleteOne({ _id: (this as Record<string, unknown>)._id } as MongoLikeFilter<T>);
   }
 
-  /** Résout un ou plusieurs champs de relation sur CE document, comme doc.populate("owner") */
-  async populate(fields: string | string[]): Promise<this> {
+  /**
+   * Résout un ou plusieurs champs de relation sur CE document, façon Mongoose :
+   *   await doc.populate("author");
+   *   await doc.populate("author", "name email");
+   *   await doc.populate([{ path: "author", select: "name" }]);
+   */
+  async populate(...args: (PopulateInput | PopulateInput[])[]): Promise<this> {
     const Model = this.constructor as unknown as ModelClass<T>;
-    await Model.populate(this, Array.isArray(fields) ? fields : [fields]);
+    await Model.populate(this, normalizePopulateArgs(args));
     return this;
   }
 
@@ -137,11 +152,13 @@ export interface ModelClass<T extends object> {
   new (data: Partial<T>, isNew?: boolean): BaseModel<T>;
   modelName: string;
 
-  create(data: Partial<T>): Promise<BaseModel<T>>;
-  insertMany(data: Partial<T>[]): Promise<BaseModel<T>[]>;
-  find(filter?: MongoLikeFilter<T>, options?: FindOptions): Query<BaseModel<T>[]>;
-  findOne(filter?: MongoLikeFilter<T>, options?: FindOptions): Query<BaseModel<T> | null>;
-  findById(id: string, options?: FindOptions): Query<BaseModel<T> | null>;
+  /** Renvoie un objet JS simple (ids déjà en string), prêt pour IPC/JSON/res.json() */
+  create(data: Partial<T>): Promise<T>;
+  insertMany(data: Partial<T>[]): Promise<T[]>;
+  /** Requête chaînable : objets JS simples par défaut, `.lean(false)` pour de vraies instances */
+  find(filter?: MongoLikeFilter<T>, options?: FindOptions): Query<T[]>;
+  findOne(filter?: MongoLikeFilter<T>, options?: FindOptions): Query<T | null>;
+  findById(id: string, options?: FindOptions): Query<T | null>;
   updateOne(filter: MongoLikeFilter<T>, update: Partial<T>): Promise<number>;
   updateMany(filter: MongoLikeFilter<T>, update: Partial<T>): Promise<number>;
   deleteOne(filter: MongoLikeFilter<T>): Promise<number>;
@@ -149,29 +166,25 @@ export interface ModelClass<T extends object> {
   count(filter?: MongoLikeFilter<T>): Promise<number>;
   countDocuments(filter?: MongoLikeFilter<T>): Promise<number>;
 
-  findByIdAndUpdate(id: string, update: Partial<T>, options?: { new?: boolean }): Promise<BaseModel<T> | null>;
-  findByIdAndDelete(id: string): Promise<BaseModel<T> | null>;
-  findOneAndUpdate(
-    filter: MongoLikeFilter<T>,
-    update: Partial<T>,
-    options?: { new?: boolean }
-  ): Promise<BaseModel<T> | null>;
-  findOneAndDelete(filter: MongoLikeFilter<T>): Promise<BaseModel<T> | null>;
+  findByIdAndUpdate(id: string, update: Partial<T>, options?: { new?: boolean }): Promise<T | null>;
+  findByIdAndDelete(id: string): Promise<T | null>;
+  findOneAndUpdate(filter: MongoLikeFilter<T>, update: Partial<T>, options?: { new?: boolean }): Promise<T | null>;
+  findOneAndDelete(filter: MongoLikeFilter<T>): Promise<T | null>;
 
   exists(filter: MongoLikeFilter<T>): Promise<boolean>;
   distinct<K extends keyof T>(field: K, filter?: MongoLikeFilter<T>): Promise<T[K][]>;
   aggregate<R = any>(pipeline: AggregationStage[]): Promise<R[]>;
 
   /** Résout les champs de relation (ref) d'un ou plusieurs documents, façon Mongoose populate() */
-  populate(doc: BaseModel<T>, fields: string[]): Promise<BaseModel<T>>;
-  populate(docs: BaseModel<T>[], fields: string[]): Promise<BaseModel<T>[]>;
+  populate(doc: T | BaseModel<T>, fields: PopulateInput | PopulateInput[] | PopulateSpec[]): Promise<T>;
+  populate(docs: (T | BaseModel<T>)[], fields: PopulateInput | PopulateInput[] | PopulateSpec[]): Promise<T[]>;
 }
 
 export function createModel<T extends object>(name: string, schema: Schema<T>): ModelClass<T> {
   class Model extends BaseModel<T> {
     static modelName = name;
 
-    static async create(data: Partial<T>): Promise<BaseModel<T>> {
+    static async create(data: Partial<T>): Promise<T> {
       const withDefaults = schema.applyDefaults(data);
       schema.validate(withDefaults);
 
@@ -187,12 +200,12 @@ export function createModel<T extends object>(name: string, schema: Schema<T>): 
         created = realm.create(name, payload);
       });
 
-      return new Model(toPlainObject<T>(created as any), false);
+      return new Model(toPlainObject<T>(created as any), false).toObject();
     }
 
-    static async insertMany(dataList: Partial<T>[]): Promise<BaseModel<T>[]> {
+    static async insertMany(dataList: Partial<T>[]): Promise<T[]> {
       const realm = await RealmClient.ready();
-      const results: BaseModel<T>[] = [];
+      const results: T[] = [];
 
       realm.write(() => {
         for (const data of dataList) {
@@ -202,13 +215,14 @@ export function createModel<T extends object>(name: string, schema: Schema<T>): 
           normalizeRelations(schema, payload);
           if (!payload._id) payload._id = new Realm.BSON.UUID();
           const created = realm.create(name, payload);
-          results.push(new Model(toPlainObject<T>(created as any), false));
+          results.push(new Model(toPlainObject<T>(created as any), false).toObject());
         }
       });
 
       return results;
     }
 
+    /** Exécution réelle de find(), toujours en instances en interne (pour populate), converties en plain à la fin */
     static _findExec(filter: MongoLikeFilter<T>, options: FindOptions): Promise<any> {
       return (async () => {
         const realm = await RealmClient.ready();
@@ -232,27 +246,28 @@ export function createModel<T extends object>(name: string, schema: Schema<T>): 
           await Model.populate(docs, options.populate);
         }
 
-        return options.lean ? docs.map((d) => d.toObject()) : docs;
+        // Objets JS bruts par défaut (lean !== false), instances seulement si lean === false explicitement.
+        return options.lean === false ? docs : docs.map((d) => d.toObject());
       })();
     }
 
     /**
-     * Renvoie une requête chaînable, façon Mongoose :
+     * Requête chaînable, façon Mongoose :
      *   await userModel.find({ role: "admin" }).populate("team").sort({ name: 1 }).limit(10);
-     * Fonctionne aussi directement avec await (sans rien chaîner), comme avant.
+     * Renvoie des objets JS simples par défaut (voir `FindOptions.lean`).
      */
-    static find(filter: MongoLikeFilter<T> = {}, options: FindOptions = {}): Query<BaseModel<T>[]> {
-      return new Query<BaseModel<T>[]>((opts) => Model._findExec(filter, opts), options);
+    static find(filter: MongoLikeFilter<T> = {}, options: FindOptions = {}): Query<T[]> {
+      return new Query<T[]>((opts) => Model._findExec(filter, opts), options);
     }
 
-    static findOne(filter: MongoLikeFilter<T> = {}, options: FindOptions = {}): Query<BaseModel<T> | null> {
-      return new Query<BaseModel<T> | null>(async (opts) => {
-        const results = (await Model._findExec(filter, { ...opts, limit: 1 })) as BaseModel<T>[];
+    static findOne(filter: MongoLikeFilter<T> = {}, options: FindOptions = {}): Query<T | null> {
+      return new Query<T | null>(async (opts) => {
+        const results = (await Model._findExec(filter, { ...opts, limit: 1 })) as T[];
         return results[0] ?? null;
       }, options);
     }
 
-    static findById(id: string, options: FindOptions = {}): Query<BaseModel<T> | null> {
+    static findById(id: string, options: FindOptions = {}): Query<T | null> {
       return Model.findOne({ _id: toUuid(id) } as unknown as MongoLikeFilter<T>, options);
     }
 
@@ -323,11 +338,11 @@ export function createModel<T extends object>(name: string, schema: Schema<T>): 
       id: string,
       update: Partial<T>,
       options: { new?: boolean } = { new: true }
-    ): Promise<BaseModel<T> | null> {
+    ): Promise<T | null> {
       return Model.findOneAndUpdate({ _id: toUuid(id) } as unknown as MongoLikeFilter<T>, update, options);
     }
 
-    static async findByIdAndDelete(id: string): Promise<BaseModel<T> | null> {
+    static async findByIdAndDelete(id: string): Promise<T | null> {
       return Model.findOneAndDelete({ _id: toUuid(id) } as unknown as MongoLikeFilter<T>);
     }
 
@@ -335,7 +350,7 @@ export function createModel<T extends object>(name: string, schema: Schema<T>): 
       filter: MongoLikeFilter<T>,
       update: Partial<T>,
       options: { new?: boolean } = { new: true }
-    ): Promise<BaseModel<T> | null> {
+    ): Promise<T | null> {
       const before = await Model.findOne(filter);
       if (!before) return null;
 
@@ -344,7 +359,7 @@ export function createModel<T extends object>(name: string, schema: Schema<T>): 
       return Model.findOne(filter);
     }
 
-    static async findOneAndDelete(filter: MongoLikeFilter<T>): Promise<BaseModel<T> | null> {
+    static async findOneAndDelete(filter: MongoLikeFilter<T>): Promise<T | null> {
       const doc = await Model.findOne(filter);
       if (!doc) return null;
       await Model.deleteOne(filter);
@@ -357,34 +372,45 @@ export function createModel<T extends object>(name: string, schema: Schema<T>): 
     }
 
     static async distinct<K extends keyof T>(field: K, filter: MongoLikeFilter<T> = {}): Promise<T[K][]> {
-      const docs = await Model.find(filter);
-      const values = docs.map((d) => d.toObject()[field]);
+      const docs = await Model.find(filter, { lean: true });
+      const values = docs.map((d) => (d as Record<string, unknown>)[field as string] as T[K]);
       return Array.from(new Set(values));
     }
 
     /** Pipeline d'agrégation façon MongoDB: $match, $group, $sort, $project, $limit, $skip, $unwind */
     static async aggregate<R = any>(pipeline: AggregationStage[]): Promise<R[]> {
-      const all = await Model.find({});
-      const plainDocs = all.map((d) => d.toObject());
-      return Aggregate.run(plainDocs, pipeline) as R[];
+      const plainDocs = await Model.find({}, { lean: true });
+      return Aggregate.run(plainDocs as unknown as Record<string, unknown>[], pipeline) as R[];
     }
 
     /**
      * Résout un ou plusieurs champs `ref` en documents réels, façon Mongoose `.populate()`.
-     * Fonctionne pour un document unique ou un tableau, et regroupe les requêtes
-     * par lot (une seule requête $in par champ, quel que soit le nombre de documents).
+     * Fonctionne sur un document unique ou un tableau, sur des instances ou des
+     * objets JS simples, et regroupe les requêtes par lot (une seule requête
+     * $in par champ, quel que soit le nombre de documents — pas de N+1).
+     * Supporte la projection : populate("author", "name email").
      *
-     *   const post = await postModel.findById(id, { populate: ["author"] });
+     *   const post = await postModel.findById(id, { populate: [{ path: "author" }] });
      *   // ou manuellement :
-     *   const post = await postModel.findById(id);
-     *   await postModel.populate(post, ["author"]);
+     *   await postModel.populate(post, "author");
+     *   await postModel.populate(post, ["author", "tags"]);
      */
-    static async populate(docOrDocs: BaseModel<T> | BaseModel<T>[], fields: string[]): Promise<any> {
+    static async populate(
+      docOrDocs: unknown,
+      fieldsInput: PopulateInput | PopulateInput[] | PopulateSpec[]
+    ): Promise<any> {
       const isArray = Array.isArray(docOrDocs);
-      const list = (isArray ? docOrDocs : [docOrDocs]) as BaseModel<T>[];
+      const list = (isArray ? docOrDocs : [docOrDocs]) as Array<Record<string, unknown>>;
       if (list.length === 0) return docOrDocs;
 
-      for (const fieldName of fields) {
+      const alreadyNormalized =
+        Array.isArray(fieldsInput) && (fieldsInput as any[]).every((f) => typeof f === "object" && f !== null && "path" in f);
+      const specs: PopulateSpec[] = alreadyNormalized
+        ? (fieldsInput as PopulateSpec[])
+        : normalizePopulateArgs(Array.isArray(fieldsInput) ? [fieldsInput as PopulateInput[]] : [fieldsInput as PopulateInput]);
+
+      for (const spec of specs) {
+        const fieldName = spec.path;
         const rawDef = schema.fields[fieldName];
         if (!rawDef || !isRelation(rawDef)) {
           throw new Error(`populate("${fieldName}") : ce champ n'est pas une relation dans le schéma "${name}".`);
@@ -402,7 +428,7 @@ export function createModel<T extends object>(name: string, schema: Schema<T>): 
         // 1. Récupère tous les ids nécessaires, sur tous les documents, en une fois.
         const idSet = new Set<string>();
         for (const doc of list) {
-          const value = (doc as unknown as Record<string, unknown>)[fieldName];
+          const value = doc[fieldName];
           if (relation.many && Array.isArray(value)) {
             for (const v of value) idSet.add(String(v));
           } else if (value) {
@@ -411,19 +437,20 @@ export function createModel<T extends object>(name: string, schema: Schema<T>): 
         }
         if (idSet.size === 0) continue;
 
-        // 2. Une seule requête $in pour charger tous les documents référencés.
-        const refDocs = await RefModel.find({ _id: { $in: Array.from(idSet).map(toUuid) } } as any);
-        const byId = new Map(refDocs.map((d: any) => [String(d.toObject()._id), d.toObject()]));
+        // 2. Une seule requête $in pour charger tous les documents référencés (objets JS bruts).
+        const refDocs = (await RefModel.find({ _id: { $in: Array.from(idSet).map(toUuid) } } as any, {
+          lean: true,
+        })) as Record<string, unknown>[];
+        const byId = new Map(refDocs.map((d) => [String(d._id), applySelect(d, spec.select)]));
 
-        // 3. Remplace les ids par les documents peuplés sur chaque document d'origine.
+        // 3. Remplace les ids par les documents peuplés (avec projection éventuelle) sur chaque document.
         for (const doc of list) {
-          const record = doc as unknown as Record<string, unknown>;
-          const value = record[fieldName];
+          const value = doc[fieldName];
           if (relation.many) {
             const arr = Array.isArray(value) ? value : [];
-            record[fieldName] = arr.map((v) => byId.get(String(v))).filter(Boolean);
+            doc[fieldName] = arr.map((v) => byId.get(String(v))).filter(Boolean);
           } else if (value) {
-            record[fieldName] = byId.get(String(value)) ?? null;
+            doc[fieldName] = byId.get(String(value)) ?? null;
           }
         }
       }
