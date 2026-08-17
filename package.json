@@ -1,6 +1,6 @@
 {
   "name": "realm-mongoose-orm",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "Mini ORM TypeScript pour Realm avec une API facon Mongoose : schemas, modeles, CRUD, migrations 100% automatiques, agregations.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
