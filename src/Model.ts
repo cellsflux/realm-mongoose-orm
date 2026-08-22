@@ -8,12 +8,12 @@ import { normalizePopulateArgs } from "./populateUtils";
 import { getRegisteredSchema } from "./registry";
 import type { FindOptions, MongoLikeFilter, PopulateInput, PopulateSpec, RelationDefinition } from "./types";
 
-/** Convertit un id passé en string (ex: depuis une URL) vers le type uuid attendu par Realm */
+/** Converts an id passed as a string (e.g. from a URL) into the uuid type Realm expects */
 function toUuid(id: string | Realm.BSON.UUID): Realm.BSON.UUID {
   return id instanceof Realm.BSON.UUID ? id : new Realm.BSON.UUID(id);
 }
 
-/** Extrait un id (string ou UUID) à partir d'une valeur brute, d'un id déjà prêt, ou d'un objet peuplé { _id } */
+/** Extracts an id (string or UUID) from a raw value, an id that's already ready, or a populated { _id } object */
 function extractId(value: unknown): Realm.BSON.UUID | undefined {
   if (value === undefined || value === null) return undefined;
   if (value instanceof Realm.BSON.UUID) return value;
@@ -24,24 +24,41 @@ function extractId(value: unknown): Realm.BSON.UUID | undefined {
   return undefined;
 }
 
+/**
+ * Recursively flattens a Realm value into a plain JS value: embedded
+ * `Realm.Object` sub-documents become plain objects, Realm lists (relation
+ * arrays, "many" fields, embedded-object arrays) become real JS arrays —
+ * all the way down, however deeply nested.
+ */
+function realmValueToPlain(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (value instanceof Date || value instanceof Realm.BSON.UUID) return value;
+  if (value instanceof Realm.Object) {
+    const plain: Record<string, unknown> = {};
+    for (const key of Object.keys(value as object)) {
+      plain[key] = realmValueToPlain((value as unknown as Record<string, unknown>)[key]);
+    }
+    return plain;
+  }
+  if (typeof value === "object" && typeof (value as any)[Symbol.iterator] === "function") {
+    return Array.from(value as Iterable<unknown>).map(realmValueToPlain);
+  }
+  return value;
+}
+
 function toPlainObject<T>(realmObject: Realm.Object & Record<string, unknown>): T {
   const plain: Record<string, unknown> = {};
   for (const key of Object.keys(realmObject)) {
-    const value = (realmObject as Record<string, unknown>)[key];
-    // Les listes Realm (relations "many", champs array) sont itérables mais pas
-    // de vrais tableaux JS : on les convertit pour un usage normal (map, JSON, ...).
-    plain[key] =
-      value && typeof value === "object" && typeof (value as any)[Symbol.iterator] === "function" && !(value instanceof Date)
-        ? Array.from(value as Iterable<unknown>)
-        : value;
+    plain[key] = realmValueToPlain((realmObject as Record<string, unknown>)[key]);
   }
   return plain as T;
 }
 
 /**
- * Convertit récursivement tout `Realm.BSON.UUID` (ids, ids de relation) en string,
- * exactement comme Mongoose sérialise un `ObjectId` en string dans `toJSON()`.
- * Sans ça, `_id` apparaîtrait comme un buffer brut illisible côté client (IPC, JSON.stringify...).
+ * Recursively converts every `Realm.BSON.UUID` (ids, relation ids) into a
+ * string, exactly like Mongoose serializes an `ObjectId` into a string in
+ * `toJSON()`. Without this, `_id` would show up as an unreadable raw buffer
+ * on the client side (IPC, JSON.stringify, ...).
  */
 function serializeValue(value: unknown): unknown {
   if (value instanceof Realm.BSON.UUID) return value.toString();
@@ -57,7 +74,7 @@ function serializeValue(value: unknown): unknown {
   return value;
 }
 
-/** Ne garde que les champs demandés (+ _id), pour populate({ select: "..." }) */
+/** Keeps only the requested fields (+ _id), for populate({ select: "..." }) */
 function applySelect<T extends Record<string, unknown>>(doc: T, select?: string[]): T {
   if (!select || select.length === 0) return doc;
   const out: Record<string, unknown> = { _id: doc._id };
@@ -68,9 +85,9 @@ function applySelect<T extends Record<string, unknown>>(doc: T, select?: string[
 }
 
 /**
- * Convertit les champs de relation (`{ ref: "User" }`) d'un payload en id(s) uuid,
- * pour que le développeur puisse indifféremment passer un id string ("64f...")
- * ou un document déjà peuplé ({ _id: "64f...", name: "Alice" }).
+ * Converts relation fields (`{ ref: "User" }`) in a payload into uuid id(s),
+ * so the developer can pass either a plain id string ("64f...") or an
+ * already-populated document ({ _id: "64f...", name: "Alice" }) interchangeably.
  */
 function normalizeRelations<T extends object>(schema: Schema<T>, payload: Record<string, unknown>): void {
   for (const [field, rawDef] of Object.entries(schema.fields)) {
@@ -90,10 +107,10 @@ function normalizeRelations<T extends object>(schema: Schema<T>, payload: Record
 }
 
 /**
- * Classe de base renvoyée par schema.model("Nom").
- * Une instance n'est créée QUE si vous utilisez `new Model(...)` ou
- * `{ lean: false }` explicitement — par défaut, toutes les méthodes du
- * modèle renvoient de simples objets JS (voir §"Le _id automatique" du README).
+ * Base class returned by schema.model("Name").
+ * An instance is only ever created when you explicitly use `new Model(...)`
+ * or `{ lean: false }` — by default, every model method returns a plain JS
+ * object (see the "Automatic _id" section of the README).
  */
 export class BaseModel<T extends object> {
   private _isNew: boolean;
@@ -104,7 +121,7 @@ export class BaseModel<T extends object> {
     this._isNew = isNew;
   }
 
-  /** Équivalent de doc.save() en Mongoose : insère si nouveau, met à jour sinon */
+  /** Equivalent of doc.save() in Mongoose: inserts if new, updates otherwise */
   async save(): Promise<this> {
     const Model = this.constructor as unknown as ModelClass<T>;
     const data = this.toObject();
@@ -120,14 +137,14 @@ export class BaseModel<T extends object> {
     return this;
   }
 
-  /** Équivalent de doc.deleteOne() en Mongoose */
+  /** Equivalent of doc.deleteOne() in Mongoose */
   async remove(): Promise<void> {
     const Model = this.constructor as unknown as ModelClass<T>;
     await Model.deleteOne({ _id: (this as Record<string, unknown>)._id } as MongoLikeFilter<T>);
   }
 
   /**
-   * Résout un ou plusieurs champs de relation sur CE document, façon Mongoose :
+   * Resolves one or more relation fields on THIS document, Mongoose-style:
    *   await doc.populate("author");
    *   await doc.populate("author", "name email");
    *   await doc.populate([{ path: "author", select: "name" }]);
@@ -152,10 +169,10 @@ export interface ModelClass<T extends object> {
   new (data: Partial<T>, isNew?: boolean): BaseModel<T>;
   modelName: string;
 
-  /** Renvoie un objet JS simple (ids déjà en string), prêt pour IPC/JSON/res.json() */
+  /** Returns a plain JS object (ids already stringified), ready for IPC/JSON/res.json() */
   create(data: Partial<T>): Promise<T>;
   insertMany(data: Partial<T>[]): Promise<T[]>;
-  /** Requête chaînable : objets JS simples par défaut, `.lean(false)` pour de vraies instances */
+  /** Chainable query: plain JS objects by default, `.lean(false)` for real instances */
   find(filter?: MongoLikeFilter<T>, options?: FindOptions): Query<T[]>;
   findOne(filter?: MongoLikeFilter<T>, options?: FindOptions): Query<T | null>;
   findById(id: string, options?: FindOptions): Query<T | null>;
@@ -175,7 +192,7 @@ export interface ModelClass<T extends object> {
   distinct<K extends keyof T>(field: K, filter?: MongoLikeFilter<T>): Promise<T[K][]>;
   aggregate<R = any>(pipeline: AggregationStage[]): Promise<R[]>;
 
-  /** Résout les champs de relation (ref) d'un ou plusieurs documents, façon Mongoose populate() */
+  /** Resolves the relation (ref) fields of one or more documents, Mongoose populate()-style */
   populate(doc: T | BaseModel<T>, fields: PopulateInput | PopulateInput[] | PopulateSpec[]): Promise<T>;
   populate(docs: (T | BaseModel<T>)[], fields: PopulateInput | PopulateInput[] | PopulateSpec[]): Promise<T[]>;
 }
@@ -222,7 +239,7 @@ export function createModel<T extends object>(name: string, schema: Schema<T>): 
       return results;
     }
 
-    /** Exécution réelle de find(), toujours en instances en interne (pour populate), converties en plain à la fin */
+    /** The actual find() execution — always instances internally (needed for populate), converted to plain at the end */
     static _findExec(filter: MongoLikeFilter<T>, options: FindOptions): Promise<any> {
       return (async () => {
         const realm = await RealmClient.ready();
@@ -246,15 +263,15 @@ export function createModel<T extends object>(name: string, schema: Schema<T>): 
           await Model.populate(docs, options.populate);
         }
 
-        // Objets JS bruts par défaut (lean !== false), instances seulement si lean === false explicitement.
+        // Plain JS objects by default (lean !== false), instances only if lean === false explicitly.
         return options.lean === false ? docs : docs.map((d) => d.toObject());
       })();
     }
 
     /**
-     * Requête chaînable, façon Mongoose :
+     * Chainable query, Mongoose-style:
      *   await userModel.find({ role: "admin" }).populate("team").sort({ name: 1 }).limit(10);
-     * Renvoie des objets JS simples par défaut (voir `FindOptions.lean`).
+     * Returns plain JS objects by default (see `FindOptions.lean`).
      */
     static find(filter: MongoLikeFilter<T> = {}, options: FindOptions = {}): Query<T[]> {
       return new Query<T[]>((opts) => Model._findExec(filter, opts), options);
@@ -332,7 +349,7 @@ export function createModel<T extends object>(name: string, schema: Schema<T>): 
       return Model.count(filter);
     }
 
-    // ---- Raccourcis "findXAndY", exactement comme Mongoose ----
+    // ---- "findXAndY" shortcuts, exactly like Mongoose ----
 
     static async findByIdAndUpdate(
       id: string,
@@ -377,21 +394,21 @@ export function createModel<T extends object>(name: string, schema: Schema<T>): 
       return Array.from(new Set(values));
     }
 
-    /** Pipeline d'agrégation façon MongoDB: $match, $group, $sort, $project, $limit, $skip, $unwind */
+    /** MongoDB-style aggregation pipeline: $match, $group, $sort, $project, $limit, $skip, $unwind */
     static async aggregate<R = any>(pipeline: AggregationStage[]): Promise<R[]> {
       const plainDocs = await Model.find({}, { lean: true });
       return Aggregate.run(plainDocs as unknown as Record<string, unknown>[], pipeline) as R[];
     }
 
     /**
-     * Résout un ou plusieurs champs `ref` en documents réels, façon Mongoose `.populate()`.
-     * Fonctionne sur un document unique ou un tableau, sur des instances ou des
-     * objets JS simples, et regroupe les requêtes par lot (une seule requête
-     * $in par champ, quel que soit le nombre de documents — pas de N+1).
-     * Supporte la projection : populate("author", "name email").
+     * Resolves one or more `ref` fields into real documents, Mongoose `.populate()`-style.
+     * Works on a single document or an array, on instances or plain JS
+     * objects, and batches the requests (a single $in query per field, no
+     * matter how many documents — no N+1). Supports projection:
+     * populate("author", "name email").
      *
      *   const post = await postModel.findById(id, { populate: [{ path: "author" }] });
-     *   // ou manuellement :
+     *   // or manually:
      *   await postModel.populate(post, "author");
      *   await postModel.populate(post, ["author", "tags"]);
      */
@@ -413,19 +430,19 @@ export function createModel<T extends object>(name: string, schema: Schema<T>): 
         const fieldName = spec.path;
         const rawDef = schema.fields[fieldName];
         if (!rawDef || !isRelation(rawDef)) {
-          throw new Error(`populate("${fieldName}") : ce champ n'est pas une relation dans le schéma "${name}".`);
+          throw new Error(`populate("${fieldName}"): this field is not a relation in the "${name}" schema.`);
         }
         const relation = rawDef as RelationDefinition;
         const entry = getRegisteredSchema(relation.ref);
         const RefModel = entry?.modelClass;
         if (!RefModel) {
           throw new Error(
-            `populate("${fieldName}") : le modèle référencé "${relation.ref}" n'est pas enregistré. ` +
-              `Importez son fichier avant de vous connecter.`
+            `populate("${fieldName}"): referenced model "${relation.ref}" is not registered. ` +
+              `Import its file before connecting.`
           );
         }
 
-        // 1. Récupère tous les ids nécessaires, sur tous les documents, en une fois.
+        // 1. Gather every id we'll need, across all documents, in one pass.
         const idSet = new Set<string>();
         for (const doc of list) {
           const value = doc[fieldName];
@@ -437,13 +454,13 @@ export function createModel<T extends object>(name: string, schema: Schema<T>): 
         }
         if (idSet.size === 0) continue;
 
-        // 2. Une seule requête $in pour charger tous les documents référencés (objets JS bruts).
+        // 2. A single $in query to load every referenced document (plain JS objects).
         const refDocs = (await RefModel.find({ _id: { $in: Array.from(idSet).map(toUuid) } } as any, {
           lean: true,
         })) as Record<string, unknown>[];
         const byId = new Map(refDocs.map((d) => [String(d._id), applySelect(d, spec.select)]));
 
-        // 3. Remplace les ids par les documents peuplés (avec projection éventuelle) sur chaque document.
+        // 3. Replace the ids with the populated documents (with optional projection) on each document.
         for (const doc of list) {
           const value = doc[fieldName];
           if (relation.many) {

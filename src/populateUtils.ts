@@ -9,7 +9,7 @@ function normalizeSelect(select?: string | string[]): string[] | undefined {
 function toSpecs(item: PopulateInput): PopulateSpec[] {
   if (typeof item === "string") {
     const trimmed = item.trim();
-    // "author tags" (espaces) -> plusieurs chemins, comme Mongoose
+    // "author tags" (space-separated) -> multiple paths, Mongoose-style
     if (/\s/.test(trimmed)) {
       return trimmed.split(/\s+/).map((path) => ({ path }));
     }
@@ -22,34 +22,34 @@ function toSpecs(item: PopulateInput): PopulateSpec[] {
 }
 
 /**
- * Comprend toutes les syntaxes populate() façon Mongoose :
+ * Understands every Mongoose-style populate() call form:
  *   populate("author")
- *   populate("author tags")                       // plusieurs chemins
- *   populate("author", "name email")               // chemin + select (espaces)
- *   populate("author", ["name", "email"])           // chemin + select (tableau)
+ *   populate("author tags")                       // multiple paths
+ *   populate("author", "name email")               // path + select (space-separated string)
+ *   populate("author", ["name", "email"])           // path + select (array)
  *   populate({ path: "author", select: "name" })
  *   populate([{ path: "author", select: "name" }, { path: "tags" }])
- *   populate("author", "name").populate("tags")     // chaîné plusieurs fois
+ *   populate("author", "name").populate("tags")     // chained multiple times
  */
 export function normalizePopulateArgs(args: unknown[]): PopulateSpec[] {
   if (args.length === 0) return [];
 
-  // populate([...]) : tableau de strings / { path, select }
+  // populate([...]) : array of strings / { path, select }
   if (args.length === 1 && Array.isArray(args[0])) {
     return (args[0] as PopulateInput[]).flatMap(toSpecs);
   }
 
-  // populate("path", "select"...) ou populate("path", ["select", ...])
+  // populate("path", "select"...) or populate("path", ["select", ...])
   if (args.length >= 2 && typeof args[0] === "string") {
     const select = normalizeSelect(args[1] as string | string[] | undefined);
     return [{ path: args[0] as string, select }];
   }
 
-  // populate("path") ou populate("a b c") ou populate({ path, select })
+  // populate("path") or populate("a b c") or populate({ path, select })
   if (args.length === 1) {
     return toSpecs(args[0] as PopulateInput);
   }
 
-  // populate({...}, {...}, "path", ...) : plusieurs arguments mixtes
+  // populate({...}, {...}, "path", ...) : multiple mixed arguments
   return (args as PopulateInput[]).flatMap(toSpecs);
 }

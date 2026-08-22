@@ -1,19 +1,22 @@
 import Realm from "realm";
 import {
+  EmbeddedSchemaDefinition,
   FieldDefinition,
   FieldOptions,
   FieldType,
+  FieldTypeCtor,
+  FieldTypeInput,
   RelationDefinition,
   SchemaDefinitionMap,
   SchemaOptions,
 } from "./types";
 import { createModel, ModelClass } from "./Model";
-import { registerSchema, registerModelClass } from "./registry";
+import { registerSchema, registerModelClass, registerEmbeddedSchemas } from "./registry";
 import type { InferSchemaType } from "./infer";
 
 export class ValidationError extends Error {
   constructor(field: string, message: string) {
-    super(`Validation échouée sur "${field}": ${message}`);
+    super(`Validation failed for "${field}": ${message}`);
     this.name = "ValidationError";
   }
 }
@@ -31,14 +34,124 @@ const TYPE_MAP: Record<FieldType, string> = {
 };
 
 export function isRelation(def: FieldDefinition): def is RelationDefinition {
-  return typeof def === "object" && def !== null && "ref" in def;
+  return typeof def === "object" && def !== null && !Array.isArray(def) && "ref" in def;
 }
 
-function normalize(def: FieldDefinition): FieldOptions | RelationDefinition {
+function isTypeCtor(value: unknown): value is FieldTypeCtor {
+  return (
+    value === String ||
+    value === Number ||
+    value === Boolean ||
+    value === Date ||
+    value === Array ||
+    (typeof Buffer !== "undefined" && value === Buffer)
+  );
+}
+
+/**
+ * Turns a native constructor (String, Number, Boolean, Date, Buffer) into
+ * its canonical string form. Lets developers write `type: String` exactly
+ * like Mongoose, in addition to the plain `type: "string"` form — both work
+ * everywhere. `Array` is handled separately by the caller (it doesn't map
+ * to a single FieldType — see `buildFieldType`).
+ */
+function normalizeFieldType(type: FieldTypeInput): FieldType {
+  if (type === String) return "string";
+  if (type === Number) return "number";
+  if (type === Boolean) return "boolean";
+  if (type === Date) return "date";
+  if (typeof Buffer !== "undefined" && type === Buffer) return "buffer";
+  return type as FieldType;
+}
+
+/** A bare nested object with neither `type` nor `ref` at its own top level: a Mongoose-style embedded sub-document. */
+export function isEmbeddedObject(def: FieldDefinition): def is EmbeddedSchemaDefinition {
+  return (
+    typeof def === "object" &&
+    def !== null &&
+    !Array.isArray(def) &&
+    !(def instanceof Date) &&
+    !isTypeCtor(def) &&
+    !("ref" in def) &&
+    !("type" in def)
+  );
+}
+
+/** `field: [{ ...nested... }]` — an array of embedded sub-documents. */
+export function isEmbeddedArrayDef(def: FieldDefinition): def is readonly [EmbeddedSchemaDefinition] {
+  return Array.isArray(def) && def.length >= 1 && isEmbeddedObject(def[0] as FieldDefinition);
+}
+
+/** `field: [String]` — shorthand array of a primitive type. */
+export function isPrimitiveArrayDef(def: FieldDefinition): def is readonly [FieldTypeInput] {
+  if (!Array.isArray(def) || def.length === 0) return false;
+  const el = def[0];
+  return typeof el === "string" || isTypeCtor(el);
+}
+
+/** Normalizes the "simple field" shorthands (string / ctor / FieldOptions) into a canonical FieldOptions. Not for relations, embedded objects, or array shorthands — check those first. */
+function normalizeSimple(def: FieldDefinition): FieldOptions {
   if (typeof def === "string") {
     return { type: def };
   }
-  return def;
+  if (isTypeCtor(def)) {
+    return { type: def === Array ? "mixed" : normalizeFieldType(def), array: def === Array ? true : undefined };
+  }
+  const opts = def as FieldOptions;
+  if (opts.type === Array) {
+    return { ...opts, type: "mixed", array: true };
+  }
+  return { ...opts, type: normalizeFieldType(opts.type) };
+}
+
+interface BuildContext {
+  embeddedSchemas: Realm.ObjectSchema[];
+  seen: Set<string>;
+}
+
+function buildEmbedded(schemaName: string, fields: EmbeddedSchemaDefinition, ctx: BuildContext): void {
+  if (ctx.seen.has(schemaName)) return;
+  ctx.seen.add(schemaName);
+  const properties = buildProperties(schemaName, fields, ctx);
+  ctx.embeddedSchemas.push({ name: schemaName, embedded: true, properties });
+}
+
+function buildProperties(schemaName: string, fields: SchemaDefinitionMap, ctx: BuildContext): Realm.PropertiesTypes {
+  const properties: Realm.PropertiesTypes = {};
+  for (const [field, rawDef] of Object.entries(fields)) {
+    properties[field] = buildFieldType(schemaName, field, rawDef, ctx);
+  }
+  return properties;
+}
+
+function buildFieldType(parentSchemaName: string, field: string, rawDef: FieldDefinition, ctx: BuildContext): string {
+  if (isRelation(rawDef)) {
+    // Stored as an _id reference (uuid), Mongoose `ref`-style — not a native Realm link.
+    // populate() resolves these ids into real documents on demand.
+    return rawDef.many ? "uuid[]" : "uuid?";
+  }
+
+  if (isEmbeddedArrayDef(rawDef)) {
+    const embeddedName = `${parentSchemaName}_${field}`;
+    buildEmbedded(embeddedName, rawDef[0] as EmbeddedSchemaDefinition, ctx);
+    return `${embeddedName}[]`;
+  }
+
+  if (isPrimitiveArrayDef(rawDef)) {
+    const base = TYPE_MAP[normalizeFieldType(rawDef[0] as FieldTypeInput)];
+    return `${base}[]`;
+  }
+
+  if (isEmbeddedObject(rawDef)) {
+    const embeddedName = `${parentSchemaName}_${field}`;
+    buildEmbedded(embeddedName, rawDef, ctx);
+    return `${embeddedName}?`;
+  }
+
+  const opts = normalizeSimple(rawDef);
+  const base = TYPE_MAP[opts.type as FieldType];
+  const suffix = opts.array ? "[]" : opts.required ? "" : "?";
+  return `${base}${suffix}`;
 }
 
 export class Schema<T extends object = Record<string, unknown>> {
@@ -54,27 +167,16 @@ export class Schema<T extends object = Record<string, unknown>> {
     };
   }
 
-  /** Construit dynamiquement le nom de classe Realm (ObjectSchema) pour ce modèle */
-  toRealmObjectSchema(name: string): Realm.ObjectSchema {
+  /**
+   * Builds the Realm ObjectSchema (property map) for this model, dynamically —
+   * including any nested embedded sub-document schemas it needs along the way.
+   */
+  toRealmObjectSchema(name: string): { main: Realm.ObjectSchema; embedded: Realm.ObjectSchema[] } {
+    const ctx: BuildContext = { embeddedSchemas: [], seen: new Set() };
     const properties: Realm.PropertiesTypes = {
       [this.options.primaryKey]: this.options.primaryKey === "_id" ? "uuid" : "string",
+      ...buildProperties(name, this.fields, ctx),
     };
-
-    for (const [field, rawDef] of Object.entries(this.fields)) {
-      const def = normalize(rawDef);
-
-      if (isRelation(def)) {
-        // Stocké comme référence par _id (uuid), façon Mongoose (`ref`) — pas comme lien Realm natif.
-        // populate() résout ensuite ces ids en documents réels, à la demande.
-        properties[field] = def.many ? "uuid[]" : "uuid?";
-        continue;
-      }
-
-      const opts = def as FieldOptions;
-      const base = TYPE_MAP[opts.type];
-      const suffix = opts.array ? "[]" : opts.required ? "" : "?";
-      properties[field] = `${base}${suffix}`;
-    }
 
     if (this.options.timestamps) {
       properties.createdAt = "date";
@@ -82,20 +184,20 @@ export class Schema<T extends object = Record<string, unknown>> {
     }
 
     return {
-      name,
-      primaryKey: this.options.primaryKey,
-      properties,
+      main: { name, primaryKey: this.options.primaryKey, properties },
+      embedded: ctx.embeddedSchemas,
     };
   }
 
-  /** Applique les valeurs par défaut (comme Mongoose) avant insertion */
+  /** Applies default values (Mongoose-style) before insertion. Skips relations, embedded objects, and array shorthands. */
   applyDefaults(doc: Partial<T>): Partial<T> {
     const result: Record<string, unknown> = { ...doc };
 
     for (const [field, rawDef] of Object.entries(this.fields)) {
-      const def = normalize(rawDef);
-      if (isRelation(def)) continue;
-      const opts = def as FieldOptions;
+      if (isRelation(rawDef) || isEmbeddedObject(rawDef) || isEmbeddedArrayDef(rawDef) || isPrimitiveArrayDef(rawDef)) {
+        continue;
+      }
+      const opts = normalizeSimple(rawDef);
 
       if (result[field] === undefined && opts.default !== undefined) {
         result[field] = typeof opts.default === "function" ? (opts.default as () => unknown)() : opts.default;
@@ -111,69 +213,85 @@ export class Schema<T extends object = Record<string, unknown>> {
     return result as Partial<T>;
   }
 
-  /** Valide un document selon les règles required / enum / min / max / validate, comme Mongoose */
+  /** Validates a document against required / enum / min / max / validate rules, Mongoose-style. Skips relations, embedded objects, and array shorthands. */
   validate(doc: Partial<T>, { partial = false }: { partial?: boolean } = {}): void {
     for (const [field, rawDef] of Object.entries(this.fields)) {
-      const def = normalize(rawDef);
-      if (isRelation(def)) continue;
-      const opts = def as FieldOptions;
+      if (isRelation(rawDef) || isEmbeddedObject(rawDef) || isEmbeddedArrayDef(rawDef) || isPrimitiveArrayDef(rawDef)) {
+        continue;
+      }
+      const opts = normalizeSimple(rawDef);
       const value = (doc as Record<string, unknown>)[field];
 
       const isMissing = value === undefined || value === null;
 
       if (!partial && opts.required && isMissing) {
-        throw new ValidationError(field, "ce champ est requis");
+        throw new ValidationError(field, "this field is required");
       }
       if (isMissing) continue;
 
       if (opts.enum && !opts.enum.includes(value as never)) {
-        throw new ValidationError(field, `valeur "${value}" hors de l'enum [${opts.enum.join(", ")}]`);
+        throw new ValidationError(field, `value "${value}" is not in the allowed enum [${opts.enum.join(", ")}]`);
       }
       if (typeof value === "number") {
         if (opts.min !== undefined && value < opts.min) {
-          throw new ValidationError(field, `doit être >= ${opts.min}`);
+          throw new ValidationError(field, `must be >= ${opts.min}`);
         }
         if (opts.max !== undefined && value > opts.max) {
-          throw new ValidationError(field, `doit être <= ${opts.max}`);
+          throw new ValidationError(field, `must be <= ${opts.max}`);
         }
       }
       if (typeof value === "string") {
         if (opts.minLength !== undefined && value.length < opts.minLength) {
-          throw new ValidationError(field, `doit contenir au moins ${opts.minLength} caractères`);
+          throw new ValidationError(field, `must be at least ${opts.minLength} characters long`);
         }
         if (opts.maxLength !== undefined && value.length > opts.maxLength) {
-          throw new ValidationError(field, `doit contenir au plus ${opts.maxLength} caractères`);
+          throw new ValidationError(field, `must be at most ${opts.maxLength} characters long`);
         }
       }
       if (opts.validate) {
         const res = opts.validate(value);
-        if (res === false) throw new ValidationError(field, "validation personnalisée échouée");
+        if (res === false) throw new ValidationError(field, "custom validation failed");
         if (typeof res === "string") throw new ValidationError(field, res);
       }
     }
   }
 
   /**
-   * Équivalent de `mongoose.model("User", userSchema)`.
-   * Enregistre le schéma dans le registre global (utilisé par RealmClient.connect)
-   * et renvoie une classe Model prête à l'emploi (create, find, findOne, save, ...).
+   * Equivalent of `mongoose.model("User", userSchema)`.
+   * Registers the schema (and any nested embedded schemas it needs) in the
+   * global registry (used by `RealmClient.connect`) and returns a
+   * ready-to-use Model class (create, find, findOne, save, ...).
    */
   model(name: string): ModelClass<T> {
-    const realmObjectSchema = this.toRealmObjectSchema(name);
-    registerSchema(name, this, realmObjectSchema);
+    const { main, embedded } = this.toRealmObjectSchema(name);
+    registerSchema(name, this, main);
+    registerEmbeddedSchemas(embedded);
     const ModelClassRef = createModel<T>(name, this);
     registerModelClass(name, ModelClassRef);
     return ModelClassRef;
   }
 }
 
-/** Alias principal demandé : ormSchema({...}, { timestamps: true }) */
 /**
- * Équivalent de `mongoose.Schema(...)`. Le type TypeScript du document est
- * déduit automatiquement à partir des champs déclarés (comme
- * `InferSchemaType` chez Mongoose) : `.create({ ... })`, `.find({ ... })`
- * etc. bénéficient de l'autocomplétion sans écrire d'interface à la main.
- * Vous pouvez toujours forcer un type explicite avec `ormSchema<MonType>(...)`.
+ * Equivalent of `mongoose.Schema(...)`. The document's TypeScript type is
+ * inferred automatically from the fields you declare (like Mongoose's
+ * `InferSchemaType`) — `.create({ ... })`, `.find({ ... })`, etc. get full
+ * autocomplete without writing an interface by hand. You can still force an
+ * explicit type with `ormSchema<MyType>(...)` if you prefer.
+ *
+ * Field types can be written either as a string (`"string"`) or as the
+ * native constructor (`String`), exactly like Mongoose. Nested objects and
+ * arrays work too:
+ *
+ *   const userSchema = ormSchema({
+ *     name: String,                                    // shorthand, native constructor
+ *     age: { type: Number, default: 18 },                // detailed, native constructor
+ *     bio: { type: "string", required: false },           // detailed, string literal
+ *     tags: [String],                                       // array of strings
+ *     address: { street: String, city: String },              // nested embedded sub-document
+ *     contacts: [{ phone: String, label: String }],             // array of embedded sub-documents
+ *     misc: { type: Array },                                      // generic array of anything (mixed[])
+ *   });
  */
 export function ormSchema<Fields extends SchemaDefinitionMap, T extends object = InferSchemaType<Fields>>(
   fields: Fields,
@@ -182,5 +300,5 @@ export function ormSchema<Fields extends SchemaDefinitionMap, T extends object =
   return new Schema<T>(fields, options);
 }
 
-/** Extrait le type de document d'un modèle : `type User = InferModel<typeof userModel>` */
+/** Extracts a model's document type: `type User = InferModel<typeof userModel>` */
 export type InferModel<M> = M extends ModelClass<infer T> ? T : never;

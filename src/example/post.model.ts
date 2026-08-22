@@ -1,13 +1,13 @@
 import { ormSchema, InferModel } from "../Schema";
 
-// Relation simple : un post appartient à un auteur (User).
-// "author" est déduit automatiquement comme un id (string), et devient un
-// objet User complet une fois populate("author") appelé.
+// Simple relation: a post belongs to an author (User).
+// "author" is inferred automatically as an id (string), and becomes a full
+// User object once populate("author") is called.
 const postSchema = ormSchema(
   {
-    title: { type: "string", required: true },
-    content: { type: "string", required: true },
-    author: { ref: "User" }, // équivalent de `author: { type: Schema.Types.ObjectId, ref: "User" }`
+    title: { type: String, required: true },
+    content: { type: String, required: true },
+    author: { ref: "User" }, // equivalent of `author: { type: Schema.Types.ObjectId, ref: "User" }`
   },
   { timestamps: true }
 );

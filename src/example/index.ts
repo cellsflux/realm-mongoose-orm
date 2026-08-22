@@ -3,98 +3,74 @@ import { userModel } from "./user.model";
 import { postModel } from "./post.model";
 
 async function main() {
-  // Connexion simplifiée : pas de schemaVersion, pas de migration à écrire.
+  // Simplified connection: no schemaVersion, no migration to write.
   await connectDB({ path: "demo.realm" });
 
-  // create() renvoie directement un objet JS simple (plus besoin de .toObject())
-  // -- sûr à envoyer tel quel via IPC Electron, res.json(), JSON.stringify(), etc.
-  const alice = await userModel.create({
-    name: "Alice",
-    email: "alice@example.com",
-    age: 24,
-  });
-  console.log("Créé:", alice); // { _id: "a2658a17-...", name: "Alice", ... } -- _id déjà en string
+  // create() returns a plain JS object directly (no more .toObject() needed)
+  // -- safe to send as-is over Electron IPC, res.json(), JSON.stringify(), etc.
+  const alice = await userModel.create({ name: "Alice", email: "alice@example.com", age: 24 });
+  console.log("Created:", alice); // { _id: "a2658a17-...", name: "Alice", ... } -- _id already a string
 
-  // new Model() + save() reste utile pour un flux orienté "document"
+  // new Model() + save() is still handy for a "document"-oriented flow
   const bob = new userModel({ name: "Bob", email: "bob@example.com" });
   await bob.save();
 
-  const carla = await userModel.create({
-    name: "Carla",
-    email: "carla@example.com",
-    age: 31,
-    role: "admin",
-  });
+  const carla = await userModel.create({ name: "Carla", email: "carla@example.com", age: 31, role: "admin" });
 
-  // find() avec filtre façon Mongo -- l'autocomplétion propose "name", "email", "age", "role", "isActive"
-  const adults = await userModel.find(
-    { age: { $gte: 18 } },
-    { sort: { name: 1 } },
-  );
-  console.log("Utilisateurs majeurs:", adults); // déjà des objets JS, pas besoin de .map(u => u.toObject())
+  // find() with a MongoDB-style filter -- autocomplete suggests "name", "email", "age", "role", "isActive"
+  const adults = await userModel.find({ age: { $gte: 18 } }, { sort: { name: 1 } });
+  console.log("Adult users:", adults); // already plain objects, no .map(u => u.toObject()) needed
 
-  // findById / findByIdAndUpdate / findByIdAndDelete, comme Mongoose
+  // findById / findByIdAndUpdate / findByIdAndDelete, just like Mongoose
   const id = alice._id as string;
   const updated = await userModel.findByIdAndUpdate(id, { age: 25 });
-  console.log("Après findByIdAndUpdate:", updated);
+  console.log("After findByIdAndUpdate:", updated);
 
   // findOneAndUpdate / findOneAndDelete
   await userModel.findOneAndUpdate({ email: "bob@example.com" }, { age: 30 });
 
   // exists / distinct
-  console.log("Un admin existe ?", await userModel.exists({ role: "admin" }));
-  console.log("Rôles distincts:", await userModel.distinct("role"));
+  console.log("Does an admin exist?", await userModel.exists({ role: "admin" }));
+  console.log("Distinct roles:", await userModel.distinct("role"));
 
-  // aggregate() façon MongoDB
+  // aggregate(), MongoDB-style
   const byRole = await userModel.aggregate([
-    {
-      $group: {
-        _id: "$role",
-        total: { $count: "$_id" },
-        avgAge: { $avg: "$age" },
-      },
-    },
+    { $group: { _id: "$role", total: { $count: "$_id" }, avgAge: { $avg: "$age" } } },
     { $sort: { total: -1 } },
   ]);
-  console.log("Agrégation par rôle:", byRole);
+  console.log("Aggregation by role:", byRole);
 
-  console.log("Nombre total d'utilisateurs:", await userModel.countDocuments());
+  console.log("Total user count:", await userModel.countDocuments());
 
-  // ---- Relations + populate(), façon Mongoose ----
+  // ---- Relations + populate(), Mongoose-style ----
 
   const post = await postModel.create({
-    title: "Premier article",
-    content: "Contenu de test",
-    author: alice, // ou directement : author: alice._id -- normalisé automatiquement
+    title: "First post",
+    content: "Test content",
+    author: alice, // or directly: author: alice._id -- normalized automatically
   });
-  console.log("Post créé (author = id, pas encore peuplé):", post);
+  console.log("Post created (author = id, not populated yet):", post);
 
-  // populate() directement dans find/findOne/findById, avec projection (select) façon Mongoose :
+  // populate() directly inside find/findOne/findById, with projection (select), Mongoose-style:
   const populatedPost = await postModel.findById(post._id as string, {
     populate: [{ path: "author", select: ["name", "email"] }],
   });
-  console.log("Post peuplé (author limité à name/email):", populatedPost);
+  console.log("Populated post (author limited to name/email):", populatedPost);
 
-  // ---- Requête CHAÎNÉE, exactement comme Mongoose ----
-  // populate("author", "name email") : chemin + projection en une chaîne façon Mongoose
+  // ---- CHAINED query, exactly like Mongoose ----
+  // populate("author", "name email"): path + projection in one call, Mongoose-style
   const chained = await postModel
-    .find({ title: "Premier article" })
+    .find({ title: "First post" })
     .populate("author", "name email")
     .sort({ title: 1 })
     .limit(5);
-  console.log("Requête chaînée avec populate + select:", chained);
+  console.log("Chained query with populate + select:", chained);
 
-  // populate() manuel, sur un document déjà récupéré (objet JS simple, pas une instance)
-  const anotherPost = await postModel.findOne(
-    { title: "Premier article" },
-    { lean: true },
-  );
+  // Manual populate(), on an already-fetched document (plain JS object, not an instance)
+  const anotherPost = await postModel.findOne({ title: "First post" }, { lean: true });
   if (anotherPost) {
-    const [populatedManually] = await postModel.populate(
-      [anotherPost],
-      "author",
-    );
-    console.log("Peuplé manuellement:", populatedManually);
+    const [populatedManually] = await postModel.populate([anotherPost], "author");
+    console.log("Manually populated:", populatedManually);
   }
 
   await userModel.findByIdAndDelete(id);

@@ -1,6 +1,6 @@
 /**
- * Types de champs supportés, calqués sur le vocabulaire Mongoose
- * mais traduits en interne vers les types Realm.
+ * Field types, mirroring Mongoose's vocabulary but mapped internally to
+ * Realm's own property types.
  */
 export type FieldType =
   | "string"
@@ -13,15 +13,33 @@ export type FieldType =
   | "mixed"
   | "buffer";
 
+/**
+ * Native JS constructors accepted anywhere a `FieldType` is expected, exactly
+ * like Mongoose lets you write `type: String` instead of `type: "string"`.
+ * Both styles work everywhere — pick whichever reads better to you.
+ * `Array` on its own means "an array of anything" (mixed), just like plain
+ * `type: Array` in Mongoose — for a typed array, use the `[String]` / `{ type: String, array: true }` forms instead.
+ */
+export type FieldTypeCtor =
+  | StringConstructor
+  | NumberConstructor
+  | BooleanConstructor
+  | DateConstructor
+  | BufferConstructor
+  | ArrayConstructor;
+
+/** Anything that can appear as a field's `type` (or as the whole shorthand field definition). */
+export type FieldTypeInput = FieldType | FieldTypeCtor;
+
 export interface RelationDefinition {
-  /** Nom du modèle référencé, ex: "User" */
+  /** Name of the referenced model, e.g. "User" */
   ref: string;
-  /** true = relation 1-N (liste), false/absent = relation 1-1 */
+  /** true = one-to-many relationship (array), false/omitted = one-to-one */
   many?: boolean;
 }
 
 export interface FieldOptions<T = unknown> {
-  type: FieldType;
+  type: FieldTypeInput;
   required?: boolean;
   default?: T | (() => T);
   unique?: boolean;
@@ -31,29 +49,53 @@ export interface FieldOptions<T = unknown> {
   max?: number;
   minLength?: number;
   maxLength?: number;
-  /** true si le champ est un tableau du type déclaré */
+  /** true if this field is an array of the declared type */
   array?: boolean;
-  /** fonction de validation custom, doit renvoyer true/false ou lever une erreur */
+  /** Custom validator — return `false`/a string error message to reject a value */
   validate?: (value: T) => boolean | string;
 }
 
-/** Un champ peut être défini en version courte ("string") ou détaillée ({ type: "string", required: true }) */
-export type FieldDefinition = FieldType | FieldOptions | RelationDefinition;
+/**
+ * A nested/embedded sub-document, Mongoose-style: a plain object of fields
+ * with no `type` or `ref` key at its own top level, e.g.:
+ *   address: { street: String, city: String }
+ * Stored as a Realm embedded object — no separate collection, no own _id,
+ * deleted automatically along with its parent.
+ */
+export type EmbeddedSchemaDefinition = SchemaDefinitionMap;
+
+/**
+ * A field can be declared several equivalent ways:
+ *   name: "string"                                  // shorthand, string literal
+ *   name: String                                     // shorthand, native constructor (Mongoose-style)
+ *   name: { type: "string", required: true }          // detailed, either type style
+ *   name: { type: Array }                               // generic array of anything (mixed[])
+ *   name: [String]                                       // shorthand array of a primitive type
+ *   name: { street: String, city: String }                // nested embedded sub-document
+ *   name: [{ street: String, city: String }]                // array of embedded sub-documents
+ */
+export type FieldDefinition =
+  | FieldTypeInput
+  | FieldOptions
+  | RelationDefinition
+  | EmbeddedSchemaDefinition
+  | readonly [FieldTypeInput]
+  | readonly [EmbeddedSchemaDefinition];
 
 export interface SchemaDefinitionMap {
   [field: string]: FieldDefinition;
 }
 
 export interface SchemaOptions {
-  /** Ajoute automatiquement createdAt / updatedAt, comme Mongoose */
+  /** Automatically adds createdAt / updatedAt, just like Mongoose */
   timestamps?: boolean;
-  /** Nom du champ utilisé comme clé primaire, défaut "_id" */
+  /** Field name used as the primary key, defaults to "_id" */
   primaryKey?: string;
-  /** Version du schéma pour les migrations Realm, défaut 0 */
+  /** Schema version for Realm migrations, defaults to 0 (managed automatically — see SchemaVersionManager) */
   version?: number;
 }
 
-/** Filtre de recherche façon MongoDB: { age: { $gt: 18 } } */
+/** MongoDB-style query filter: { age: { $gt: 18 } } */
 export type MongoLikeFilter<T = Record<string, unknown>> = {
   [K in keyof T]?: T[K] | MongoOperator<T[K]>;
 } & { _id?: string | MongoOperator<string> };
@@ -71,27 +113,27 @@ export interface MongoOperator<T> {
   $contains?: string;
 }
 
-/** Spécification normalisée de population (interne) */
+/** Normalized population spec, used internally once all populate() call styles have been parsed */
 export interface PopulateSpec {
   path: string;
   select?: string[];
 }
 
-/** Ce que le développeur peut passer à .populate(...), façon Mongoose */
+/** Anything you can pass to .populate(...), Mongoose-style */
 export type PopulateInput = string | { path: string; select?: string | string[] };
 
 export interface FindOptions {
   sort?: Record<string, 1 | -1>;
   limit?: number;
   skip?: number;
-  /** Champs de relation à résoudre automatiquement, façon Mongoose populate() */
+  /** Relation fields to resolve automatically, Mongoose populate()-style */
   populate?: PopulateSpec[];
   /**
-   * Renvoie des objets JS bruts (par défaut : true) au lieu d'instances de
-   * modèle. Mettez `lean: false` pour récupérer de vraies instances avec
-   * `.save()` / `.populate()` / `.remove()`. Par défaut, tout est déjà un
-   * objet JS simple — sûr à envoyer tel quel via IPC Electron, JSON.stringify,
-   * res.json(), etc. (les ids sont déjà des strings).
+   * Return plain JS objects (default: true) instead of model instances.
+   * Set `lean: false` to get real instances back, with `.save()` /
+   * `.populate()` / `.remove()` available on them. By default everything is
+   * already a plain object — safe to send as-is over Electron IPC,
+   * JSON.stringify, res.json(), etc. (ids are already strings).
    */
   lean?: boolean;
 }

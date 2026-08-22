@@ -3,14 +3,14 @@ import Realm from "realm";
 export type MigrationFn = (oldRealm: Realm, newRealm: Realm) => void;
 
 /**
- * Helpers de migration "sans risque" : chaque méthode protège contre les
- * erreurs les plus courantes (propriété absente, index hors limites) au lieu
- * de laisser planter la migration Realm.
+ * "Safe" migration helpers: each method guards against the most common
+ * failure modes (missing property, out-of-bounds index) instead of letting
+ * the Realm migration crash outright.
  */
 export class MigrationBuilder {
   constructor(private oldRealm: Realm, private newRealm: Realm) {}
 
-  /** Renomme un champ en copiant sa valeur, sans jamais planter si absent */
+  /** Renames a field by copying its value over, never throws if the field is missing */
   renameField(schemaName: string, from: string, to: string): void {
     const oldObjects = this.oldRealm.objects(schemaName);
     const newObjects = this.newRealm.objects(schemaName);
@@ -24,7 +24,7 @@ export class MigrationBuilder {
     }
   }
 
-  /** Remplit une valeur par défaut pour tous les objets qui n'ont pas encore ce champ */
+  /** Fills a default value for every object that doesn't already have this field set */
   fillDefault(schemaName: string, field: string, value: unknown): void {
     const newObjects = this.newRealm.objects(schemaName);
     for (const obj of newObjects) {
@@ -35,7 +35,7 @@ export class MigrationBuilder {
     }
   }
 
-  /** Transforme chaque objet existant avec une fonction custom, en toute sécurité (try/catch par ligne) */
+  /** Transforms each existing object with a custom function, safely (try/catch per row) */
   transform(schemaName: string, fn: (oldObj: any, newObj: any) => void): void {
     const oldObjects = this.oldRealm.objects(schemaName);
     const newObjects = this.newRealm.objects(schemaName);
@@ -44,13 +44,13 @@ export class MigrationBuilder {
       try {
         fn(oldObjects[i], newObjects[i]);
       } catch (err) {
-        console.warn(`[migration] échec sur ${schemaName}[${i}]:`, err);
+        console.warn(`[migration] failed on ${schemaName}[${i}]:`, err);
       }
     }
   }
 }
 
-/** Aide à écrire une migration lisible: defineMigration((m) => { m.renameField(...) }) */
+/** Helper for writing a readable migration: defineMigration((m) => { m.renameField(...) }) */
 export function defineMigration(build: (m: MigrationBuilder, oldVersion: number) => void): MigrationFn {
   return (oldRealm, newRealm) => {
     const builder = new MigrationBuilder(oldRealm, newRealm);

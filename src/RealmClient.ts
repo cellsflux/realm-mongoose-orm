@@ -10,24 +10,24 @@ export { MigrationBuilder, defineMigration };
 export type { MigrationFn };
 
 export interface ConnectOptions {
-  /** Chemin du fichier .realm sur disque, ou ":memory:" pour les tests. Défaut: "app.realm" */
+  /** Path to the .realm file on disk, or ":memory:" for tests. Defaults to "app.realm" */
   path?: string;
   /**
-   * Mode EXPERT uniquement : si vous préférez gérer la version vous-même.
-   * Par défaut, laissez-le vide : la librairie détecte les changements de schéma
-   * et gère la version + la migration toute seule (comme Mongoose qui ne demande
-   * jamais de versionner un schéma).
+   * EXPERT mode only: if you'd rather manage the version yourself.
+   * By default, leave this unset: the library detects schema changes and
+   * handles versioning + migration entirely on its own (like Mongoose,
+   * which never asks you to version a schema).
    */
   schemaVersion?: number;
   /**
-   * Mode EXPERT uniquement : logique de migration additionnelle, appelée
-   * APRÈS la migration automatique (remplissage des nouveaux champs).
-   * Utile pour un renommage de champ ou une transformation complexe.
+   * EXPERT mode only: additional migration logic, called AFTER the
+   * automatic migration (which already fills in new fields). Useful for a
+   * field rename or a more complex data transformation.
    */
   onMigration?: MigrationFn;
-  /** Clé de chiffrement optionnelle (Uint8Array de 64 octets) */
+  /** Optional encryption key (64-byte Uint8Array) */
   encryptionKey?: Uint8Array;
-  /** Coupe les logs de connexion dans la console */
+  /** Silences connection logs in the console */
   silent?: boolean;
 }
 
@@ -39,11 +39,11 @@ class RealmClientImpl extends EventEmitter {
   private connectingPromise: Promise<Realm> | null = null;
 
   /**
-   * Se connecte à la base Realm. Équivalent simplifié de `mongoose.connect(uri)`.
-   * - Aucun `_id` à gérer : généré automatiquement (uuid) à chaque `create()`.
-   * - Aucune `schemaVersion` à gérer : détectée et incrémentée automatiquement
-   *   dès que vous changez un `ormSchema(...)`.
-   * - Réutilise la connexion existante si déjà connecté (comme un singleton).
+   * Connects to the Realm database. Simplified equivalent of `mongoose.connect(uri)`.
+   * - No `_id` to manage: auto-generated (uuid) on every `create()`.
+   * - No `schemaVersion` to manage: detected and bumped automatically
+   *   whenever you change an `ormSchema(...)`.
+   * - Reuses the existing connection if already connected (singleton-style).
    */
   async connect(options: ConnectOptions = {}): Promise<Realm> {
     if (this.realm && !this.realm.isClosed) {
@@ -69,8 +69,8 @@ class RealmClientImpl extends EventEmitter {
     const schema = getAllRealmObjectSchemas();
     if (schema.length === 0) {
       const err = new Error(
-        "Aucun schéma enregistré. Importez vos fichiers de modèles (ormSchema(...).model(...)) avant de vous connecter, " +
-          'ou utilisez RealmClient.loadModels("./models") pour les charger automatiquement.'
+        "No schema registered. Import your model files (ormSchema(...).model(...)) before connecting, " +
+          'or use RealmClient.loadModels("./models") to load them automatically.'
       );
       this.state = "error";
       this.emit("error", err);
@@ -79,7 +79,7 @@ class RealmClientImpl extends EventEmitter {
 
     const dbPath = options.path ?? "app.realm";
 
-    // --- Gestion 100% automatique de la version + migration ---
+    // --- Fully automatic version + migration handling ---
     const versionManager = new SchemaVersionManager(dbPath);
     const plan = versionManager.plan(options.schemaVersion, options.onMigration);
 
@@ -93,14 +93,14 @@ class RealmClientImpl extends EventEmitter {
 
     try {
       this.realm = await Realm.open(config);
-      // Le méta-fichier n'est écrit qu'ICI, une fois la migration réellement
-      // appliquée avec succès. Si Realm.open() avait échoué, rien n'est écrit :
-      // la prochaine tentative recalculera exactement le même plan de migration
-      // au lieu de rester bloquée dans un état désynchronisé.
+      // The meta file is only written HERE, once the migration has actually
+      // succeeded. If Realm.open() had failed, nothing is written: the next
+      // attempt recomputes the exact same migration plan instead of getting
+      // stuck in a desynchronized state.
       plan.commit();
       this.state = "connected";
       if (!options.silent) {
-        console.log(`✅ [realm-mongoose-orm] connecté à "${dbPath}" (schemaVersion=${plan.version})`);
+        console.log(`✅ [realm-mongoose-orm] connected to "${dbPath}" (schemaVersion=${plan.version})`);
       }
       this.emit("connected", this.realm);
       return this.realm;
@@ -111,11 +111,11 @@ class RealmClientImpl extends EventEmitter {
     }
   }
 
-  /** Charge automatiquement tous les fichiers de modèles d'un dossier (comme `require("./models")`) */
+  /** Automatically loads every model file in a directory (like `require("./models")`) */
   loadModels(directory: string): void {
     const abs = path.resolve(directory);
     if (!fs.existsSync(abs)) {
-      throw new Error(`Dossier de modèles introuvable: ${abs}`);
+      throw new Error(`Models directory not found: ${abs}`);
     }
     for (const file of fs.readdirSync(abs)) {
       if (/\.(js|ts)$/.test(file) && !file.endsWith(".d.ts")) {
@@ -126,25 +126,23 @@ class RealmClientImpl extends EventEmitter {
 
   getRealm(): Realm {
     if (!this.realm || this.realm.isClosed) {
-      throw new Error(
-        "Realm n'est pas connecté. Appelez RealmClient.connect(...) (ou connectDB(...)) avant d'utiliser un modèle."
-      );
+      throw new Error("Realm is not connected. Call RealmClient.connect(...) (or connectDB(...)) before using a model.");
     }
     return this.realm;
   }
 
   /**
-   * Comme `getRealm()`, mais attend une connexion déjà EN COURS au lieu
-   * d'échouer immédiatement (façon "buffering" de Mongoose). Utile quand une
-   * requête IPC arrive juste après le démarrage de l'app, pendant que
-   * `connectDB()` est encore en train de s'exécuter : au lieu de crasher,
-   * l'opération patiente puis s'exécute normalement dès que possible.
-   * Si la connexion échoue (ex: erreur de migration), l'erreur remonte ici.
+   * Like `getRealm()`, but waits for an ALREADY IN-PROGRESS connection
+   * instead of failing immediately (Mongoose-style command "buffering").
+   * Useful when an IPC request arrives right after app startup, while
+   * `connectDB()` is still running: instead of crashing, the operation
+   * waits and then runs normally as soon as possible. If the connection
+   * itself fails (e.g. a migration error), that error surfaces here.
    */
   async ready(): Promise<Realm> {
     if (this.realm && !this.realm.isClosed) return this.realm;
     if (this.connectingPromise) return this.connectingPromise;
-    return this.getRealm(); // jamais connecté et rien en cours -> erreur claire
+    return this.getRealm(); // never connected and nothing in progress -> clear error
   }
 
   close(): void {
@@ -165,15 +163,15 @@ class RealmClientImpl extends EventEmitter {
   }
 }
 
-/** Singleton, comme `mongoose.connection` */
+/** Singleton, like `mongoose.connection` */
 export const RealmClient = new RealmClientImpl();
 
-/** Alias ergonomique, comme `mongoose.connect(uri)` */
+/** Ergonomic alias, like `mongoose.connect(uri)` */
 export async function connectDB(options: ConnectOptions = {}): Promise<Realm> {
   return RealmClient.connect(options);
 }
 
-/** Alias ergonomique, comme `mongoose.disconnect()` */
+/** Ergonomic alias, like `mongoose.disconnect()` */
 export function disconnectDB(): void {
   RealmClient.close();
 }

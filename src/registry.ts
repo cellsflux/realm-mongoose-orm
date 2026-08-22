@@ -10,6 +10,11 @@ export interface RegistryEntry {
 
 const registry = new Map<string, RegistryEntry>();
 
+// Embedded (nested) sub-document schemas, keyed by their generated name
+// (e.g. "User_address"). Not top-level models — no CRUD, no CRUD registry
+// entry, but Realm.open() still needs them in its schema array.
+const embeddedRegistry = new Map<string, Realm.ObjectSchema>();
+
 export function registerSchema(name: string, schema: Schema<any>, realmObjectSchema: Realm.ObjectSchema): void {
   const existing = registry.get(name);
   registry.set(name, { schema, realmObjectSchema, modelClass: existing?.modelClass });
@@ -24,12 +29,23 @@ export function registerModelClass(name: string, modelClass: ModelClass<any>): v
   }
 }
 
+export function registerEmbeddedSchemas(schemas: Realm.ObjectSchema[]): void {
+  for (const schema of schemas) {
+    embeddedRegistry.set(schema.name, schema);
+  }
+}
+
 export function getRegisteredSchema(name: string): RegistryEntry | undefined {
   return registry.get(name);
 }
 
+/** Every schema Realm.open() needs: top-level models + their nested embedded schemas. */
 export function getAllRealmObjectSchemas(): Realm.ObjectSchema[] {
-  return Array.from(registry.values()).map((e) => e.realmObjectSchema);
+  return [...Array.from(registry.values()).map((e) => e.realmObjectSchema), ...Array.from(embeddedRegistry.values())];
+}
+
+export function getAllEmbeddedSchemas(): Map<string, Realm.ObjectSchema> {
+  return embeddedRegistry;
 }
 
 export function getAllEntries(): Map<string, RegistryEntry> {
@@ -38,4 +54,5 @@ export function getAllEntries(): Map<string, RegistryEntry> {
 
 export function clearRegistry(): void {
   registry.clear();
+  embeddedRegistry.clear();
 }

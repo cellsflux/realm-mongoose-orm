@@ -1,10 +1,9 @@
 import type { MongoLikeFilter, MongoOperator } from "./types";
 
 /**
- * Realm utilise un langage de requête textuel (RQL), proche de SQL,
- * alors que Mongoose utilise des objets de filtre.
- * Cette classe traduit { age: { $gt: 18 }, name: "Ali" }
- * en  "age > $0 AND name == $1"  + [18, "Ali"]
+ * Realm uses a text-based query language (RQL), close to SQL, while
+ * Mongoose uses filter objects. This class translates
+ * { age: { $gt: 18 }, name: "Ali" } into "age > $0 AND name == $1" + [18, "Ali"]
  */
 export class QueryTranslator {
   static translate<T>(filter: MongoLikeFilter<T> = {}): { query: string; args: unknown[] } {
@@ -89,7 +88,7 @@ export class QueryTranslator {
         args.push(value);
         return `${field} CONTAINS[c] $${args.length - 1}`;
       default:
-        throw new Error(`Opérateur non supporté: ${op}`);
+        throw new Error(`Unsupported operator: ${op}`);
     }
   }
 

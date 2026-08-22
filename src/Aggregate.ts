@@ -83,8 +83,8 @@ function applyAccumulator(acc: string, values: any[]): any {
 }
 
 /**
- * Pipeline d'agrégation en mémoire, façon `Model.aggregate([...])` de Mongoose.
- * Fonctionne sur un tableau de documents déjà chargés depuis Realm.
+ * In-memory aggregation pipeline, Mongoose/MongoDB `Model.aggregate([...])`-style.
+ * Operates on an array of documents already loaded from Realm.
  */
 export class Aggregate {
   static run(docs: any[], pipeline: AggregationStage[]): any[] {
@@ -128,7 +128,7 @@ export class Aggregate {
             } else if (rule === 1) {
               out[field] = doc[field];
             }
-            // rule === 0 => champ exclu, on ne le copie pas
+            // rule === 0 => excluded field, skip it
           }
           return out;
         });
