@@ -1,6 +1,6 @@
 {
   "name": "realm-mongoose-orm",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "A Mongoose-flavored TypeScript ORM for Realm: schemas, models, full CRUD returning plain JS objects, populate() with select, fully automatic migrations, and MongoDB-style aggregation.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
