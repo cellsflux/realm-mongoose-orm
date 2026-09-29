@@ -86,6 +86,14 @@ export interface SchemaDefinitionMap {
   [field: string]: FieldDefinition;
 }
 
+/** `toObject()`/`toJSON()` behavior, Mongoose-style: `ormSchema(fields, { toJSON: { transform: (doc, ret) => {...} } })` */
+export interface ToObjectOptions {
+  /** Include virtuals (schema.virtual(...)) in the output. Default: false, exactly like Mongoose. */
+  virtuals?: boolean;
+  /** Runs after conversion to a plain object; mutate & return `ret`, or return a new object to replace it entirely. */
+  transform?: (doc: unknown, ret: Record<string, unknown>) => Record<string, unknown> | void;
+}
+
 export interface SchemaOptions {
   /** Automatically adds createdAt / updatedAt, just like Mongoose */
   timestamps?: boolean;
@@ -93,6 +101,10 @@ export interface SchemaOptions {
   primaryKey?: string;
   /** Schema version for Realm migrations, defaults to 0 (managed automatically — see SchemaVersionManager) */
   version?: number;
+  /** Customizes the output of doc.toJSON() (and, by extension, what gets returned by every model method — see §6/§8bis of the README) */
+  toJSON?: ToObjectOptions;
+  /** Customizes the output of doc.toObject() */
+  toObject?: ToObjectOptions;
 }
 
 /** MongoDB-style query filter: { age: { $gt: 18 } } */

@@ -9,6 +9,7 @@ import {
   RelationDefinition,
   SchemaDefinitionMap,
   SchemaOptions,
+  ToObjectOptions,
 } from "./types";
 import { createModel, ModelClass } from "./Model";
 import { registerSchema, registerModelClass, registerEmbeddedSchemas } from "./registry";
@@ -20,6 +21,32 @@ export class ValidationError extends Error {
     this.name = "ValidationError";
   }
 }
+
+/**
+ * Returned by `schema.virtual(name)`, exactly like Mongoose's `VirtualType`.
+ * Chain `.get(fn)` / `.set(fn)` to define a computed property that isn't
+ * stored in Realm at all — it only exists on real model instances
+ * (`new Model(...)` or `{ lean: false }`), and is included in
+ * `toObject()`/`toJSON()` output only when asked for (`{ virtuals: true }`
+ * on the call, or `virtuals: true` in the schema's `toObject`/`toJSON` option).
+ */
+export class VirtualType {
+  getter?: (this: any) => unknown;
+  setter?: (this: any, value: unknown) => void;
+
+  get(fn: (this: any) => unknown): this {
+    this.getter = fn;
+    return this;
+  }
+
+  set(fn: (this: any, value: unknown) => void): this {
+    this.setter = fn;
+    return this;
+  }
+}
+
+type HookFn = (this: any, doc: any) => void | Promise<void>;
+type HookEvent = "save" | "remove";
 
 const TYPE_MAP: Record<FieldType, string> = {
   string: "string",
@@ -158,6 +185,17 @@ export class Schema<T extends object = Record<string, unknown>> {
   public readonly fields: SchemaDefinitionMap;
   public readonly options: Required<Pick<SchemaOptions, "timestamps" | "primaryKey" | "version">>;
 
+  /** Instance methods, Mongoose-style: `schema.methods.getFullName = function () { return this.name; }` */
+  public readonly methods: Record<string, (this: any, ...args: any[]) => any> = {};
+  /** Static (model-level) methods: `schema.statics.findActive = function () { return this.find({ active: true }); }` */
+  public readonly statics: Record<string, (this: any, ...args: any[]) => any> = {};
+  /** Computed properties, defined via `schema.virtual(name)` */
+  public readonly virtuals: Record<string, VirtualType> = {};
+  public readonly preHooks: Record<HookEvent, HookFn[]> = { save: [], remove: [] };
+  public readonly postHooks: Record<HookEvent, HookFn[]> = { save: [], remove: [] };
+  public readonly toJSONOptions: ToObjectOptions;
+  public readonly toObjectOptions: ToObjectOptions;
+
   constructor(fields: SchemaDefinitionMap, options: SchemaOptions = {}) {
     this.fields = fields;
     this.options = {
@@ -165,6 +203,8 @@ export class Schema<T extends object = Record<string, unknown>> {
       primaryKey: options.primaryKey ?? "_id",
       version: options.version ?? 0,
     };
+    this.toJSONOptions = options.toJSON ?? {};
+    this.toObjectOptions = options.toObject ?? {};
   }
 
   /**
@@ -254,6 +294,51 @@ export class Schema<T extends object = Record<string, unknown>> {
         if (typeof res === "string") throw new ValidationError(field, res);
       }
     }
+  }
+
+  /**
+   * Defines a computed property, Mongoose-style:
+   *   userSchema.virtual("fullName").get(function () { return `${this.firstName} ${this.lastName}`; });
+   * Only available on real instances (`new Model(...)` or `{ lean: false }`) —
+   * never stored in Realm. Add a setter with `.set(fn)` too if you want it writable.
+   */
+  virtual(name: string): VirtualType {
+    const v = new VirtualType();
+    this.virtuals[name] = v;
+    return v;
+  }
+
+  /**
+   * Registers a hook that runs BEFORE the operation, Mongoose `pre()`-style.
+   * `"save"` covers both `Model.create(...)` and `new Model(...).save()`;
+   * `this`/the argument is the plain payload about to be written — mutate it
+   * directly (e.g. hash a password) before it's persisted.
+   * `"remove"` covers `deleteOne`/`deleteMany`/`doc.remove()`.
+   *
+   * Note: unlike Mongoose, hooks here are promise-based only (no `next()`
+   * callback) — return a Promise (or use `async`) if you need to await something.
+   */
+  pre(event: HookEvent, fn: HookFn): this {
+    this.preHooks[event].push(fn);
+    return this;
+  }
+
+  /** Registers a hook that runs AFTER the operation succeeds, with the final plain result. */
+  post(event: HookEvent, fn: HookFn): this {
+    this.postHooks[event].push(fn);
+    return this;
+  }
+
+  /**
+   * Applies a reusable plugin to this schema, Mongoose-style:
+   *   schema.plugin(softDeletePlugin, { deletedAtField: "deletedAt" });
+   * A plugin is just a function that receives the schema (and your options)
+   * and can add methods/statics/virtuals/hooks to it — nothing magic, just
+   * a convention for packaging reusable schema behavior.
+   */
+  plugin<Options = unknown>(fn: (schema: this, options?: Options) => void, options?: Options): this {
+    fn(this, options);
+    return this;
   }
 
   /**

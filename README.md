@@ -82,14 +82,11 @@ npm run build
 import { ormSchema, connectDB } from "realm-mongoose-orm";
 
 // 1. Define a schema, Mongoose-style
-const userSchema = ormSchema(
-  {
-    name: { type: String, required: true },
-    email: { type: String, required: true, unique: true },
-    age: { type: Number, default: 18 },
-  },
-  { timestamps: true },
-);
+const userSchema = ormSchema({
+  name: { type: String, required: true },
+  email: { type: String, required: true, unique: true },
+  age: { type: Number, default: 18 },
+}, { timestamps: true });
 
 // 2. Create the model
 export const userModel = userSchema.model("User");
@@ -110,22 +107,19 @@ id generation, no `.toObject()` conversion step.
 ## 4. Defining a schema
 
 ```ts
-const productSchema = ormSchema(
-  {
-    title: { type: String, required: true, minLength: 3, maxLength: 120 },
-    price: { type: Number, required: true, min: 0 },
-    category: { type: String, enum: ["food", "tech", "clothing"] as const },
-    inStock: { type: Boolean, default: true },
-    tags: { type: String, array: true }, // array of strings
-    publishedAt: { type: Date, default: () => new Date() }, // dynamic default
-    owner: { ref: "User" }, // one-to-one relation
-    reviews: { ref: "Review", many: true }, // one-to-many relation
-  },
-  {
-    timestamps: true, // adds createdAt / updatedAt automatically
-    primaryKey: "_id", // this is already the default, no need to set it explicitly
-  },
-);
+const productSchema = ormSchema({
+  title:       { type: String, required: true, minLength: 3, maxLength: 120 },
+  price:       { type: Number, required: true, min: 0 },
+  category:    { type: String, enum: ["food", "tech", "clothing"] as const },
+  inStock:     { type: Boolean, default: true },
+  tags:        { type: String, array: true },                // array of strings
+  publishedAt: { type: Date, default: () => new Date() },      // dynamic default
+  owner:       { ref: "User" },                                 // one-to-one relation
+  reviews:     { ref: "Review", many: true },                    // one-to-many relation
+}, {
+  timestamps: true,   // adds createdAt / updatedAt automatically
+  primaryKey: "_id",  // this is already the default, no need to set it explicitly
+});
 
 export const productModel = productSchema.model("Product");
 ```
@@ -144,29 +138,29 @@ name: "string"                                // bare shorthand, string literal
 ```
 
 | Native constructor | String literal | Realm property type |
-| ------------------ | -------------- | ------------------- |
-| `String`           | `"string"`     | `string`            |
-| `Number`           | `"number"`     | `double`            |
-| —                  | `"int"`        | `int`               |
-| `Boolean`          | `"boolean"`    | `bool`              |
-| `Date`             | `"date"`       | `date`              |
-| —                  | `"objectId"`   | `objectId`          |
-| —                  | `"uuid"`       | `uuid`              |
-| —                  | `"mixed"`      | `mixed`             |
-| `Buffer`           | `"buffer"`     | `data`              |
+|----------------------|-------------------|-------------------------|
+| `String`               | `"string"`           | `string`                  |
+| `Number`               | `"number"`            | `double`                    |
+| —                        | `"int"`                 | `int`                        |
+| `Boolean`              | `"boolean"`           | `bool`                       |
+| `Date`                  | `"date"`               | `date`                        |
+| —                        | `"objectId"`           | `objectId`                     |
+| —                        | `"uuid"`               | `uuid`                          |
+| —                        | `"mixed"`              | `mixed`                          |
+| `Buffer`               | `"buffer"`             | `data`                             |
 
 ### Validation options, per field
 
-| Option                    | Effect                                                                              |
-| ------------------------- | ----------------------------------------------------------------------------------- |
-| `required`                | Field must be provided when creating a document                                     |
-| `default`                 | Value (or function) applied when the field is missing                               |
-| `unique`                  | Documents this field as unique (see [limitations](#15-best-practices--limitations)) |
-| `enum`                    | List of allowed values                                                              |
-| `min` / `max`             | Numeric bounds                                                                      |
-| `minLength` / `maxLength` | String length bounds                                                                |
-| `array`                   | Marks the field as an array of the declared type                                    |
-| `validate`                | Custom validator: `(value) => boolean \| string`                                    |
+| Option        | Effect                                                         |
+|---------------|-------------------------------------------------------------------|
+| `required`    | Field must be provided when creating a document                    |
+| `default`     | Value (or function) applied when the field is missing                |
+| `unique`      | Documents this field as unique (see [limitations](#15-best-practices--limitations))|
+| `enum`        | List of allowed values                                                 |
+| `min` / `max` | Numeric bounds                                                          |
+| `minLength` / `maxLength` | String length bounds                                       |
+| `array`       | Marks the field as an array of the declared type                        |
+| `validate`    | Custom validator: `(value) => boolean \| string`                          |
 
 ### Nested objects, embedded arrays, and `Array`
 
@@ -195,16 +189,13 @@ const userSchema = ormSchema({
 const user = await userModel.create({
   name: "Alice",
   address: { street: "1 Main St", city: "Springfield", zip: "00000" },
-  contacts: [
-    { phone: "+1...", label: "mobile" },
-    { phone: "+2...", label: "work" },
-  ],
+  contacts: [{ phone: "+1...", label: "mobile" }, { phone: "+2...", label: "work" }],
   tags: ["vip", "beta"],
   metadata: [1, "anything", true],
 });
 
-console.log(user.address.city); // "Springfield" — already a plain object, no populate() needed
-console.log(user.contacts[0].phone); // "+1..." — already a plain array of plain objects
+console.log(user.address.city);        // "Springfield" — already a plain object, no populate() needed
+console.log(user.contacts[0].phone);    // "+1..." — already a plain array of plain objects
 ```
 
 Nesting works at any depth (an embedded object can itself contain another
@@ -232,8 +223,8 @@ recursively — `create({ address: { ... } })` suggests `street`, `city`,
 import { connectDB, disconnectDB, RealmClient } from "realm-mongoose-orm";
 
 await connectDB({
-  path: "app.realm", // local file, or ":memory:" for tests
-  silent: false, // false = log the connection to the console
+  path: "app.realm",  // local file, or ":memory:" for tests
+  silent: false,        // false = log the connection to the console
 });
 
 // ... your app runs ...
@@ -270,8 +261,8 @@ hood when `_id` isn't provided — exactly like Mongoose generates an
 **Every method returns a plain JS object by default** — `create`, `find`,
 `findOne`, `findById`, `findByIdAndUpdate`, `insertMany`, and so on. No
 conversion step, no class to learn. This matters a lot with **Electron** in
-particular: `ipcMain.handle` serializes its response using the _structured
-clone_ algorithm, which **ignores** custom `toJSON()` methods on classes.
+particular: `ipcMain.handle` serializes its response using the *structured
+clone* algorithm, which **ignores** custom `toJSON()` methods on classes.
 Returning a raw model instance over IPC used to leak internal fields and
 buffer-encoded ids — that's no longer possible, since you're already
 holding an ordinary JS object:
@@ -390,11 +381,11 @@ await connectDB({
 });
 ```
 
-| `MigrationBuilder` method          | What it does                                                 |
-| ---------------------------------- | ------------------------------------------------------------ |
-| `renameField(model, from, to)`     | Copies the old field's value to the new field name           |
-| `fillDefault(model, field, value)` | Backfills a default value where the field is missing         |
-| `transform(model, fn)`             | Custom transformation, protected by a per-document try/catch |
+| `MigrationBuilder` method | What it does |
+|------------------------------|------------------|
+| `renameField(model, from, to)` | Copies the old field's value to the new field name |
+| `fillDefault(model, field, value)` | Backfills a default value where the field is missing |
+| `transform(model, fn)` | Custom transformation, protected by a per-document try/catch |
 
 ---
 
@@ -403,19 +394,14 @@ await connectDB({
 ```ts
 // Create
 const user = await userModel.create({ name: "Alice", email: "a@test.com" });
-const users = await userModel.insertMany([
-  { name: "Bob", email: "b@test.com" },
-]);
+const users = await userModel.insertMany([{ name: "Bob", email: "b@test.com" }]);
 
 // new + save() (Mongoose document-style)
 const doc = new userModel({ name: "Carla", email: "c@test.com" });
 await doc.save();
 
 // Read — find/findOne/findById return a CHAINABLE Query (see §9)
-await userModel.find(
-  { age: { $gte: 18 } },
-  { sort: { name: 1 }, limit: 10, skip: 0 },
-);
+await userModel.find({ age: { $gte: 18 } }, { sort: { name: 1 }, limit: 10, skip: 0 });
 await userModel.findOne({ email: "a@test.com" });
 await userModel.findById(id);
 await userModel.count();
@@ -426,12 +412,8 @@ await userModel.distinct("role");
 // Update
 await userModel.updateOne({ email: "a@test.com" }, { age: 26 });
 await userModel.updateMany({ role: "user" }, { isActive: true });
-await userModel.findByIdAndUpdate(id, { age: 27 }); // returns the updated document
-await userModel.findOneAndUpdate(
-  { email: "a@test.com" },
-  { age: 28 },
-  { new: false },
-); // returns the old document
+await userModel.findByIdAndUpdate(id, { age: 27 });          // returns the updated document
+await userModel.findOneAndUpdate({ email: "a@test.com" }, { age: 28 }, { new: false }); // returns the old document
 
 // Delete
 await userModel.deleteOne({ email: "a@test.com" });
@@ -442,9 +424,9 @@ await userModel.findOneAndDelete({ email: "a@test.com" });
 // Instance
 await doc.save();
 await doc.remove();
-await doc.populate("author"); // resolves a relation field on this document
+await doc.populate("author");     // resolves a relation field on this document
 doc.toObject(); // plain JS object, ids already stringified
-doc.toJSON(); // alias, handy for res.json(doc) or an IPC response
+doc.toJSON();   // alias, handy for res.json(doc) or an IPC response
 ```
 
 ---
@@ -461,7 +443,7 @@ default**, ready to return as-is (IPC, `res.json()`, ...):
 // Exactly the Mongoose syntax you're used to:
 const posts = await postModel
   .find({ title: "First post" })
-  .populate("author") // resolves the relation
+  .populate("author")          // resolves the relation
   .sort({ createdAt: -1 })
   .skip(0)
   .limit(20);
@@ -472,9 +454,7 @@ console.log(posts[0].author.name); // already populated, already a plain object
 await postModel.find({}).populate("author", "name email"); // path + select (space-separated string)
 await postModel.find({}).populate("author", ["name", "email"]); // path + select (array)
 await postModel.find({}).populate({ path: "author", select: "name email" });
-await postModel
-  .find({})
-  .populate([{ path: "author", select: "name" }, { path: "tags" }]);
+await postModel.find({}).populate([{ path: "author", select: "name" }, { path: "tags" }]);
 
 // Multiple paths at once, no select (Mongoose "path1 path2" style):
 await postModel.find({}).populate("author tags");
@@ -488,13 +468,13 @@ const doc = await userModel.findOne({ email: "a@test.com" }).lean(false);
 await doc?.save();
 ```
 
-| `Query` method                                                               | Mongoose equivalent |
-| ---------------------------------------------------------------------------- | ------------------- |
-| `.populate(path)` / `.populate(path, select)` / `.populate([{path,select}])` | `.populate(...)`    |
-| `.sort(spec)`                                                                | `.sort(spec)`       |
-| `.limit(n)`                                                                  | `.limit(n)`         |
-| `.skip(n)`                                                                   | `.skip(n)`          |
-| `.lean()` / `.lean(false)`                                                   | `.lean()`           |
+| `Query` method | Mongoose equivalent |
+|-------------------|------------------------|
+| `.populate(path)` / `.populate(path, select)` / `.populate([{path,select}])` | `.populate(...)` |
+| `.sort(spec)`            | `.sort(spec)` |
+| `.limit(n)`               | `.limit(n)` |
+| `.skip(n)`                 | `.skip(n)` |
+| `.lean()` / `.lean(false)`  | `.lean()` |
 
 ---
 
@@ -525,13 +505,12 @@ An in-memory pipeline, Mongoose/MongoDB `Model.aggregate([...])`-style:
 ```ts
 const stats = await userModel.aggregate([
   { $match: { isActive: true } },
-  {
-    $group: {
+  { $group: {
       _id: "$role",
       total: { $count: "$_id" },
       avgAge: { $avg: "$age" },
       maxAge: { $max: "$age" },
-    },
+    }
   },
   { $sort: { total: -1 } },
   { $limit: 5 },
@@ -550,7 +529,7 @@ Supported stages: `$match`, `$group` (`$sum`, `$avg`, `$min`, `$max`,
 ```ts
 const reviewSchema = ormSchema({
   text: { type: String, required: true },
-  author: { ref: "User" }, // simple relation
+  author: { ref: "User" },              // simple relation
 });
 
 const productSchema = ormSchema({
@@ -572,7 +551,7 @@ document; the relation is normalized automatically either way:
 const post = await postModel.create({
   title: "My post",
   content: "...",
-  author: alice, // or directly: author: alice._id
+  author: alice,       // or directly: author: alice._id
 });
 ```
 
@@ -598,8 +577,8 @@ plain object or an instance):
 
 ```ts
 const post = await postModel.findOne({ title: "My post" }, { lean: false }); // instance -> .populate() available
-await post?.populate("author"); // a single field
-await post?.populate("author", "name email"); // with projection
+await post?.populate("author");                       // a single field
+await post?.populate("author", "name email");          // with projection
 await post?.populate([{ path: "author", select: "name" }]);
 
 // Or directly on a plain object, via the static method:
@@ -642,7 +621,6 @@ RealmClient.isConnected(); // boolean
 ## 14. Full API reference
 
 ### `ormSchema(fields, options?) => Schema`
-
 Creates a schema definition. `options.timestamps` adds `createdAt`/`updatedAt`.
 The document's TypeScript type is **inferred automatically** from the
 declared fields (autocomplete on `create()`, `find()`, etc. without writing
@@ -650,28 +628,22 @@ an interface by hand — see `InferSchemaType` / `InferModel` below). Field
 types accept both native constructors (`String`) and string literals (`"string"`).
 
 ### `schema.model(name) => ModelClass`
-
 Registers the schema and returns the model class you use for CRUD.
 
 ### `InferModel<typeof myModel>` / `InferSchemaType<Fields>`
-
 Extracts a document's TypeScript type from a model or a schema:
-
 ```ts
 export type IUser = InferModel<typeof userModel>;
 ```
 
 ### `connectDB(options?) => Promise<Realm>`
-
 Simplified connection. `options.path`, `options.silent`. Expert mode:
 `options.schemaVersion`, `options.onMigration`.
 
 ### `disconnectDB() => void`
-
 Closes the connection.
 
 ### `RealmClient`
-
 Singleton exposing `.connect()`, `.close()`, `.getRealm()` (fails
 immediately if not connected), `.ready()` (waits for an **in-progress**
 connection instead of failing — used internally throughout the library),
@@ -679,13 +651,11 @@ connection instead of failing — used internally throughout the library),
 `connecting` / `connected` / `disconnected` / `error` events.
 
 ### `Query` (returned by `find` / `findOne` / `findById`)
-
 Chainable, "thenable" object: `.populate(path, select?)`, `.sort(spec)`,
 `.limit(n)`, `.skip(n)`, `.lean(true|false)`. `await`s directly like a
 Promise. **Returns plain JS objects by default** (`lean !== false`).
 
 ### Static model methods
-
 `create`, `insertMany`, `find`, `findOne`, `findById`, `updateOne`,
 `updateMany`, `deleteOne`, `deleteMany`, `count`, `countDocuments`, `exists`,
 `distinct`, `findByIdAndUpdate`, `findByIdAndDelete`, `findOneAndUpdate`,
@@ -693,13 +663,55 @@ Promise. **Returns plain JS objects by default** (`lean !== false`).
 **All of them return plain JS objects**, ids already stringified.
 
 ### Instance methods (only via `new Model(...)` or `{ lean: false }`)
-
 `save()`, `remove()`, `populate(path, select?)`, `toObject()`, `toJSON()`.
+
+---
+
+## 14bis. Mongoose schema mechanisms: methods, statics, virtuals, hooks, plugins
+
+```ts
+const userSchema = ormSchema({ firstName: String, lastName: String, password: String });
+
+// Instance methods
+userSchema.methods.getFullName = function () { return `${this.firstName} ${this.lastName}`; };
+
+// Static (model-level) methods
+userSchema.statics.findByEmail = function (email: string) { return this.findOne({ email }); };
+
+// Virtuals (computed, never stored)
+userSchema.virtual("fullName").get(function () { return `${this.firstName} ${this.lastName}`; });
+
+// Hooks (promise-based, no next() callback)
+userSchema.pre("save", async (doc) => { doc.password = await hash(doc.password); });
+userSchema.post("remove", (doc) => console.log("deleted", doc._id));
+
+// Reusable plugin
+userSchema.plugin((schema) => { schema.statics.findActive = function () { return this.find({ active: true }); }; });
+
+// toJSON/toObject transform (hide fields, runs on every plain-object output too)
+const schema2 = ormSchema(fields, { toJSON: { transform: (doc, ret) => { delete ret.password; return ret; } } });
+
+const userModel = userSchema.model("User");
+const doc = new userModel({ firstName: "A", lastName: "B" }); // instance -> methods/virtuals available
+doc.getFullName(); await userModel.findByEmail("a@test.com");
+```
+
+> `pre`/`post` currently cover `"save"` (create, and `new Model().save()` when new)
+> and `"remove"` (deleteOne/deleteMany). Query-level hooks (`pre("find")`, etc.),
+> discriminators, and MongoDB-style multi-document transactions aren't
+> implemented — Realm is a local embedded database, not a MongoDB server, so
+> `writeConcern`/`shardKey`/sessions genuinely don't apply here.
 
 ---
 
 ## 15. Best practices & limitations
 
+- **`ObjectId(value)` / `normalizeId(value)`** (also exported from the
+  package root) are the single utility every `_id` and `ref` field is
+  normalized through — accepts a raw string, a quoted/JSON-escaped string,
+  an already-populated document, or a real BSON id. You no longer need to
+  write this yourself in application code; `find`/`update`/`delete`/`create`
+  all normalize `_id` and every relation field automatically.
 - **Always import your model files before `connectDB()`** — it's the
   import that registers the schema in the global registry.
 - **The `<db>.meta.json` file** created next to your `.realm` is what
@@ -739,7 +751,6 @@ Check your internet connection / corporate proxy.
 
 **`Cannot find module '.../realm/prebuilds/node/realm.node'`**
 → The most common causes, in order:
-
 1. **Two versions of `realm` installed** (common with pnpm, when a
    transitive dependency pulls in a different version). Run `pnpm why realm`
    to see every resolution path, and pin a single version via
